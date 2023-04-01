@@ -29,6 +29,8 @@ typedef uint32_t Perm;
 #define MMIO_ADDR MMIO_UNPRIV_ADDR
 #define MMIO_SIZE (MMIO_UNPRIV_SIZE + MMIO_PRIV_SIZE)
 
+#define LPAGE_SIZE (1 << 21)
+
 #define PMEM_PROT_EPS ((EpId)4)
 /// The send EP for kernel calls from TileMux
 #define KPEX_SEP (PMEM_PROT_EPS + 0)
@@ -174,13 +176,24 @@ static Error insert_tlb(uint16_t asid, uint64_t virt, uint64_t phys,
 {
 	Reg cmd;
 	Error e;
+	uint32_t tcu_flags = 0;
+	if(perm & 1)
+		tcu_flags |= 1;
+	if(perm & 2)
+		tcu_flags |= 2;
+	if(perm & 16)
+		tcu_flags |= 4;
+
+	if(perm & 8)
+		phys = phys | ((virt & (LPAGE_SIZE - 1)) & ~(uint64_t)PAGE_MASK);
+
 	// pr_info("tlb insert: asid: %#hx, virt: %#llx, phys: %#llx, perm: %#x\n",
 	// 	asid, virt, phys, perm);
 	BUG_ON(phys >> 32 != 0);
 	write_priv_reg(PrivReg_PRIV_CMD_ARG, virt & PAGE_MASK);
 	mb();
 	cmd = ((Reg)asid << 41) | ((phys & PAGE_MASK) << 9) |
-	      (((uint32_t)perm) << 9) | PrivCmdOpCode_INS_TLB;
+	      (tcu_flags << 9) | PrivCmdOpCode_INS_TLB;
 	write_priv_reg(PrivReg_PRIV_CMD, cmd);
 	e = get_priv_error();
 	if (e) {

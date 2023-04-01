@@ -9,7 +9,7 @@
 #include <linux/string.h>
 #include <linux/printk.h>
 
-#define SIZE_OF_MSG_HEADER 24
+#define SIZE_OF_MSG_HEADER 32
 
 uint8_t *snd_buf = (uint8_t *)NULL;
 // for receiving sidecalls from m3 kernel

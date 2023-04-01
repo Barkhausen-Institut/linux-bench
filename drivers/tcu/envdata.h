@@ -2,6 +2,8 @@
 #ifndef ENVDATA_H
 #define ENVDATA_H
 
+#include "cfg.h"
+
 #include <linux/types.h>
 
 typedef struct {
@@ -11,17 +13,19 @@ typedef struct {
     uint64_t tile_desc;
     uint64_t argc;
     uint64_t argv;
-    uint64_t heap_size;
+    uint64_t envp;
     uint64_t kenv;
-    uint64_t closure;
+    uint64_t raw_tile_count;
+    uint64_t raw_tile_ids[MAX_TILES * MAX_CHIPS];
 
     // set by TileMux
     uint64_t shared;
 
     // m3 env
-    uint64_t envp;
     uint64_t sp;
     uint64_t entry;
+    uint64_t lambda;
+    uint64_t heap_size;
     uint64_t first_std_ep;
     uint64_t first_sel;
     uint64_t act_id;
@@ -38,9 +42,6 @@ typedef struct {
 
     uint64_t data_addr;
     uint64_t data_len;
-
-    // only used in C++
-    uint64_t _backend;
 } EnvData;
 
 #endif // ENVDATA_H
