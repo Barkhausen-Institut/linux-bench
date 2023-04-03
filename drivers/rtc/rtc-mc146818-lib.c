@@ -86,8 +86,8 @@ again:
 
 	spin_unlock_irqrestore(&rtc_lock, flags);
 
-	if (retry)
-		goto again;
+	// if (retry)
+	// 	goto again;
 
 	if (!(ctrl & RTC_DM_BINARY) || RTC_ALWAYS_BCD)
 	{
