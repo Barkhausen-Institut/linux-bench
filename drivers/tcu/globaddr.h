@@ -1,4 +1,3 @@
-
 #ifndef GLOBADDR_H
 #define GLOBADDR_H
 
