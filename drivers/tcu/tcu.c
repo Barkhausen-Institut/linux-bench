@@ -20,6 +20,9 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
+Reg *unpriv_base = (Reg *)NULL;
+Reg *priv_base = (Reg *)NULL;
+
 typedef struct {
 	// current activity id
 	// set to PRIV_AID or aid depending on whether we are in privileged or unprivileged mode
