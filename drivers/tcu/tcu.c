@@ -20,8 +20,12 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
+// for initrd_start
+#include <linux/initrd.h>
+
 Reg *unpriv_base = (Reg *)NULL;
 Reg *priv_base = (Reg *)NULL;
+bool is_gem5 = false;
 
 typedef struct {
 	// current activity id
@@ -286,6 +290,9 @@ static dev_t create_tcu_dev(void)
 static int __init tcu_init(void)
 {
 	dev_t dev;
+
+	is_gem5 = initrd_start != 0x14000000;
+
 	dev = create_tcu_dev();
 	if (dev == (dev_t)-1) {
 		return -1;

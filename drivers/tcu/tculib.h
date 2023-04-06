@@ -51,6 +51,8 @@ typedef uint32_t Perm;
 extern Reg *unpriv_base;
 extern Reg *priv_base;
 
+extern bool is_gem5;
+
 typedef enum PrivReg {
 	/// For core requests
 	PrivReg_CORE_REQ = 0x0,
