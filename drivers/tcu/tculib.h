@@ -16,6 +16,8 @@ typedef uint16_t ActId;
 typedef uint8_t TileId;
 typedef uint32_t Perm;
 
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
 // privileged activity id
 #define PRIV_AID 0xffff
 // invalid activity id
@@ -38,12 +40,15 @@ typedef uint32_t Perm;
 /// The receive EP for sidecalls from the kernel for TileMux
 #define TMSIDE_REP (PMEM_PROT_EPS + 2)
 
+#define TOTAL_EPS (is_gem5 ? 192 : 128)
 /// The number of external registers
 #define EXT_REGS 2
 /// The number of unprivileged registers
 #define UNPRIV_REGS 6
 /// The number of registers per EP
 #define EP_REGS 3
+/// The number of print registers
+#define PRINT_REGS 32
 
 #define MAX_MSG_SIZE 512
 
@@ -196,5 +201,7 @@ Error ack_msg(EpId ep, size_t msg_off);
 void print_ep_info(EpId ep, EpInfo i);
 EpInfo unpack_mem_ep(EpId ep);
 
+void tcu_print(const char *str);
+void tcu_printf(const char *fmt, ...);
 
 #endif // TCULIB_H

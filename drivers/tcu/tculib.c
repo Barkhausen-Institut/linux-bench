@@ -120,3 +120,50 @@ EpInfo unpack_mem_ep(EpId ep)
     BUG_ON((r0 & 0x7) != 0x3); // ep must be a memory ep
     return (EpInfo){ .tid = tid, .addr = r1, .size = r2, .perm = perm };
 }
+
+void tcu_print(const char *str)
+{
+    // make sure the string is aligned for the 8-byte accesses below
+    static __attribute__((aligned(8))) char aligned_buf[PRINT_REGS * sizeof(Reg)];
+
+    const char *aligned_str;
+    size_t regCount;
+    Reg *buffer;
+    const Reg *rstr, *end;
+    size_t len;
+
+    len = strlen(str);
+    len = MIN(len, PRINT_REGS * sizeof(Reg) - 1);
+
+    aligned_str = str;
+    if((uintptr_t)aligned_str & 7) {
+        memcpy(aligned_buf, str, len);
+        aligned_str = aligned_buf;
+    }
+
+    BUG_ON(unpriv_base == NULL);
+    regCount = EXT_REGS + UNPRIV_REGS + TOTAL_EPS * EP_REGS;
+    buffer = unpriv_base + regCount;
+    rstr = (const Reg *)(aligned_str);
+    end = (const Reg *)(aligned_str + len);
+    while(rstr < end) {
+        iowrite64(*rstr, buffer);
+        buffer++;
+        rstr++;
+    }
+
+    write_unpriv_reg(UnprivReg_PRINT, len);
+    // wait until the print was carried out
+    while(read_unpriv_reg(UnprivReg_PRINT) != 0)
+        ;
+}
+
+void tcu_printf(const char *fmt, ...)
+{
+    __attribute__((aligned(8))) char buffer[PRINT_REGS * sizeof(Reg)];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    tcu_print(buffer);
+    va_end(args);
+}
