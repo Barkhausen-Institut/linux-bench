@@ -57,6 +57,8 @@ typedef uint32_t Perm;
 extern Reg *unpriv_base;
 extern Reg *priv_base;
 
+extern phys_addr_t std_buf_phys;
+
 extern EnvData *m3_env;
 
 extern uint16_t tile_ids[MAX_CHIPS * MAX_TILES];

@@ -25,6 +25,7 @@ Reg *priv_base = (Reg *)NULL;
 EnvData *m3_env = (EnvData *)NULL;
 uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
 bool is_gem5 = false;
+phys_addr_t std_buf_phys;
 
 typedef struct {
 	// current activity id
@@ -40,6 +41,12 @@ typedef struct {
 	uint64_t arg1;
 	uint64_t arg2;
 } NoopArg;
+
+enum {
+	Type_TCU,
+	Type_Environment,
+	Type_StdRecvBuf,
+};
 
 // register an activity
 #define IOCTL_RGSTR_ACT _IO('q', 1)
@@ -209,29 +216,47 @@ static long int tcu_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	size_t size = vma->vm_end - vma->vm_start;
-	// physical address of the mmio area
-	phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
+	int res, io = 0;
+	size_t expected_size, size = vma->vm_end - vma->vm_start;
+	unsigned long pfn;
+	int ty = vma->vm_pgoff;
 
-	/* Does it even fit in phys_addr_t? */
-	if (offset >> PAGE_SHIFT != vma->vm_pgoff) {
-		return -EINVAL;
-	}
+	pr_info("tcu_dev_mmap: start=%#lx, end=%#lx, ty=%d\n", vma->vm_start,
+		vma->vm_end, ty);
 
-	/* It's illegal to wrap around the end of the physical address space. */
-	if (offset + (phys_addr_t)size - 1 < offset) {
+	switch (ty) {
+	case Type_TCU:
+		pfn = MMIO_UNPRIV_ADDR >> PAGE_SHIFT;
+		expected_size = MMIO_UNPRIV_SIZE;
+		io = 1;
+		break;
+	case Type_Environment:
+		pfn = ENV_START >> PAGE_SHIFT;
+		expected_size = PAGE_SIZE;
+		break;
+	case Type_StdRecvBuf:
+		pfn = std_buf_phys >> PAGE_SHIFT;
+		expected_size = PAGE_SIZE;
+		break;
+	default:
+		pr_err("tcu mmap invalid type: %d\n", ty);
 		return -EINVAL;
 	}
 
 	/* We only want to support mapping the tcu mmio area */
-	if (offset != MMIO_UNPRIV_ADDR || size != MMIO_UNPRIV_SIZE) {
-		pr_err("tcu mmap invalid area\n");
+	if (size != expected_size) {
+		pr_err("tcu mmap unexpected size: %zu vs. %zu\n", size,
+		       expected_size);
 		return -EINVAL;
 	}
 
-	/* Remap-pfn-range will mark the range VM_IO */
-	if (io_remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff, size,
-			       vma->vm_page_prot)) {
+	if (io) {
+		/* Remap-pfn-range will mark the range VM_IO */
+		res = io_remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
+	} else
+		res = remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
+
+	if (res) {
 		pr_err("tcu mmap - remap_pfn_range failed\n");
 		return -EAGAIN;
 	}
@@ -339,6 +364,8 @@ static int __init tcu_init(void)
 	rpl_buf = (uint8_t *)memremap(TILEMUX_RBUF_SPACE, KPEX_RBUF_SIZE,
 				      MEMREMAP_WB);
 	snd_buf = (uint8_t *)kmalloc(MAX_MSG_SIZE, GFP_KERNEL);
+	std_buf_phys = virt_to_phys(kmalloc(PAGE_SIZE, GFP_KERNEL));
+
 	init_tileid_translation();
 
 	// the message needs to be 16 byte aligned

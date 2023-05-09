@@ -140,7 +140,7 @@ void wait_for_translate(void)
 		physaddr = ENV_START;
 		break;
 	case RBUF_STD_ADDR:
-		physaddr = MEM_OFFSET + 2 * PAGE_SIZE;
+		physaddr = std_buf_phys;
 		break;
 	default:
 		BUG();
