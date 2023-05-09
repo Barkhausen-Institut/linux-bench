@@ -1,6 +1,7 @@
 #ifndef TCULIB_H
 #define TCULIB_H
 
+#include "envdata.h"
 #include "tcuerr.h"
 
 #include <linux/kernel.h>
@@ -13,7 +14,7 @@ typedef uint64_t Reg;
 typedef uint64_t EpId;
 typedef uint64_t Label;
 typedef uint16_t ActId;
-typedef uint8_t TileId;
+typedef uint16_t TileId;
 typedef uint32_t Perm;
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -55,6 +56,10 @@ typedef uint32_t Perm;
 // start address of the unprivileged und privileged tcu mmio region
 extern Reg *unpriv_base;
 extern Reg *priv_base;
+
+extern EnvData *m3_env;
+
+extern uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
 
 extern bool is_gem5;
 
@@ -130,6 +135,19 @@ typedef struct {
 	uint64_t size;
 	Perm perm;
 } EpInfo;
+
+static inline TileId nocid_to_tileid(uint16_t tile)
+{
+	size_t i;
+	for (i = 0; i < MAX_CHIPS * MAX_TILES; ++i) {
+		if (tile_ids[i] == tile) {
+			uint8_t chip = i / MAX_TILES;
+			uint8_t tile = i % MAX_TILES;
+			return (chip << 8) | tile;
+		}
+	}
+	BUG_ON(true);
+}
 
 static inline void write_unpriv_reg(unsigned int index, Reg val)
 {

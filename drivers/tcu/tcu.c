@@ -20,11 +20,10 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
-// for initrd_start
-#include <linux/initrd.h>
-
 Reg *unpriv_base = (Reg *)NULL;
 Reg *priv_base = (Reg *)NULL;
+EnvData *m3_env = (EnvData *)NULL;
+uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
 bool is_gem5 = false;
 
 typedef struct {
@@ -287,11 +286,39 @@ static dev_t create_tcu_dev(void)
 	return dev;
 }
 
+static void init_tileid_translation(void)
+{
+	size_t i, count = m3_env->raw_tile_count;
+
+	uint8_t log_chip = 0;
+	uint8_t log_tile = 0;
+	int phys_chip = -1;
+
+	for (i = 0; i < count; ++i) {
+		TileId tid = m3_env->raw_tile_ids[i];
+		uint8_t cid = tid >> 8;
+
+		if (phys_chip != -1) {
+			if (phys_chip != cid) {
+				phys_chip = cid;
+				log_chip += 1;
+				log_tile = 0;
+			} else
+				log_tile += 1;
+		} else {
+			phys_chip = cid;
+		}
+
+		tile_ids[log_chip * MAX_TILES + log_tile] = tid;
+	}
+}
+
 static int __init tcu_init(void)
 {
 	dev_t dev;
 
-	is_gem5 = initrd_start != 0x14000000;
+	m3_env = (EnvData *)memremap(ENV_START, PAGE_SIZE, MEMREMAP_WB);
+	is_gem5 = m3_env->platform == 0;
 
 	dev = create_tcu_dev();
 	if (dev == (dev_t)-1) {
@@ -312,6 +339,8 @@ static int __init tcu_init(void)
 	rpl_buf = (uint8_t *)memremap(TILEMUX_RBUF_SPACE, KPEX_RBUF_SIZE,
 				      MEMREMAP_WB);
 	snd_buf = (uint8_t *)kmalloc(MAX_MSG_SIZE, GFP_KERNEL);
+	init_tileid_translation();
+
 	// the message needs to be 16 byte aligned
 	BUG_ON(((uintptr_t)snd_buf) % 16 != 0);
 

@@ -117,7 +117,7 @@ EpInfo unpack_mem_ep(EpId ep)
 	Reg r0 = read_ep_reg(ep, 0);
 	Reg r1 = read_ep_reg(ep, 1);
 	Reg r2 = read_ep_reg(ep, 2);
-	TileId tid = (r0 >> 23) & 0xff; // TODO: this only works on gem5
+	TileId tid = nocid_to_tileid((r0 >> 23) & 0x3fff);
 	Perm perm = (r0 >> 19) & 0x3;
 	BUG_ON((r0 & 0x7) != 0x3); // ep must be a memory ep
 	return (EpInfo){ .tid = tid, .addr = r1, .size = r2, .perm = perm };
