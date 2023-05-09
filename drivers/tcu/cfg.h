@@ -3,20 +3,20 @@
 
 #include "tculib.h"
 
-#define MAX_TILES          64
-#define MAX_CHIPS          2
+#define MAX_TILES 64
+#define MAX_CHIPS 2
 
-#define RBUF_STD_ADDR      0xd0000000
+#define RBUF_STD_ADDR 0xd0000000
 
-#define MEM_OFFSET         0x10000000
-#define ENV_START          (MEM_OFFSET + 0x8)
+#define MEM_OFFSET 0x10000000
+#define ENV_START (MEM_OFFSET + 0x8)
 
-#define TILEMUX_START      (is_gem5 ? (MEM_OFFSET + 0x200000) : MEM_OFFSET)
+#define TILEMUX_START (is_gem5 ? (MEM_OFFSET + 0x200000) : MEM_OFFSET)
 #define TILEMUX_RBUF_SPACE (TILEMUX_START + 0xd00000 - 0x200000)
 
-#define KPEX_RBUF_ORD      6
-#define KPEX_RBUF_SIZE     (1 << KPEX_RBUF_ORD)
+#define KPEX_RBUF_ORD 6
+#define KPEX_RBUF_SIZE (1 << KPEX_RBUF_ORD)
 
-#define SIDE_RBUF_ADDR     (TILEMUX_RBUF_SPACE + KPEX_RBUF_SIZE)
+#define SIDE_RBUF_ADDR (TILEMUX_RBUF_SPACE + KPEX_RBUF_SIZE)
 
 #endif // CFG_H

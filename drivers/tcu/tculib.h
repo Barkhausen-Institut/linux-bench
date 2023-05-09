@@ -125,10 +125,10 @@ typedef enum {
 } UnprivReg;
 
 typedef struct {
-    TileId tid;
-    uint64_t addr;
-    uint64_t size;
-    Perm perm;
+	TileId tid;
+	uint64_t addr;
+	uint64_t size;
+	Perm perm;
 } EpInfo;
 
 static inline void write_unpriv_reg(unsigned int index, Reg val)
@@ -186,13 +186,14 @@ static inline Error get_priv_error(void)
 
 static inline Reg build_cmd(EpId ep, CmdOpCode cmd, Reg arg)
 {
-    return (arg << 25) | ((Reg)ep << 4) | cmd;
+	return (arg << 25) | ((Reg)ep << 4) | cmd;
 }
 
 Error insert_tlb(uint16_t asid, uint64_t virt, uint64_t phys, uint8_t perm);
 Error xchg_activity(Reg actid);
 Error perform_send_reply(uint64_t msg_addr, Reg cmd);
-Error send_aligned(EpId ep, uint8_t *msg, size_t len, Label reply_lbl, EpId reply_ep);
+Error send_aligned(EpId ep, uint8_t *msg, size_t len, Label reply_lbl,
+		   EpId reply_ep);
 Error reply_aligned(EpId ep, uint8_t *reply, size_t len, size_t msg_off);
 // returns ~(size_t)0 if there is no message or there was an error
 size_t fetch_msg(EpId ep);

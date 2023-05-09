@@ -49,9 +49,9 @@ typedef struct {
 // forgets about an activity
 #define IOCTL_UNREG_ACT _IO('q', 3)
 // noop
-#define IOCTL_NOOP      _IO('q', 4)
+#define IOCTL_NOOP _IO('q', 4)
 // noop with argument
-#define IOCTL_NOOP_ARG  _IOW('q', 5, NoopArg *)
+#define IOCTL_NOOP_ARG _IOW('q', 5, NoopArg *)
 
 static inline bool in_inval_mode(void)
 {
