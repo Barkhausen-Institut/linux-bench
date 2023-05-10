@@ -1,17 +1,9 @@
-#ifndef SIDECALLS_H
-#define SIDECALLS_H
+#ifndef TCU_SIDECALLS_H
+#define TCU_SIDECALLS_H
 
 #include <linux/types.h>
 
 #include "tculib.h"
-
-#define SIZE_OF_MSG_HEADER 32
-
-extern uint8_t *snd_buf;
-// for receiving sidecalls from m3 kernel
-extern uint8_t *rcv_buf;
-// for receiving replies from m3 kernel
-extern uint8_t *rpl_buf;
 
 typedef enum {
 	Sidecall_ACT_INIT = 0x0,
@@ -87,6 +79,12 @@ typedef struct {
 	uint64_t val2;
 } Response;
 
+extern uint8_t *snd_buf;
+// for receiving sidecalls from m3 kernel
+extern uint8_t *rcv_buf;
+// for receiving replies from m3 kernel
+extern uint8_t *rpl_buf;
+
 Error send_response(Response res, size_t request_offset);
 
 void wait_for_get_quota(void);
@@ -99,4 +97,4 @@ Error wait_for_reply(void);
 Error snd_rcv_sidecall_exit(ActId aid, uint64_t code);
 Error snd_rcv_sidecall_lx_act(void);
 
-#endif // SIDECALLS_H
+#endif // TCU_SIDECALLS_H

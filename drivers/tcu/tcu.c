@@ -1,4 +1,3 @@
-
 #include "sidecalls.h"
 #include "tculib.h"
 #include "cfg.h"
@@ -20,34 +19,6 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
-Reg *unpriv_base = (Reg *)NULL;
-Reg *priv_base = (Reg *)NULL;
-EnvData *m3_env = (EnvData *)NULL;
-uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
-bool is_gem5 = false;
-phys_addr_t std_buf_phys;
-
-typedef struct {
-	// current activity id
-	// set to PRIV_AID or aid depending on whether we are in privileged or unprivileged mode
-	ActId cur_aid;
-	// set to activity id as soon as we register an activity
-	ActId aid;
-} state_t;
-
-static state_t state = { .cur_aid = PRIV_AID, .aid = INVAL_AID };
-
-typedef struct {
-	uint64_t arg1;
-	uint64_t arg2;
-} NoopArg;
-
-enum {
-	Type_TCU,
-	Type_Environment,
-	Type_StdRecvBuf,
-};
-
 // register an activity
 #define IOCTL_RGSTR_ACT _IO('q', 1)
 // inserts an entry in tcu tlb, uses current activity id
@@ -58,6 +29,36 @@ enum {
 #define IOCTL_NOOP _IO('q', 4)
 // noop with argument
 #define IOCTL_NOOP_ARG _IOW('q', 5, NoopArg *)
+
+typedef struct {
+	// current activity id
+	// set to PRIV_AID or aid depending on whether we are in privileged or unprivileged mode
+	ActId cur_aid;
+	// set to activity id as soon as we register an activity
+	ActId aid;
+} state_t;
+
+typedef struct {
+	uint64_t arg1;
+	uint64_t arg2;
+} NoopArg;
+
+enum {
+	MemType_TCU,
+	MemType_Environment,
+	MemType_StdRecvBuf,
+};
+
+Reg *unpriv_base = (Reg *)NULL;
+Reg *priv_base = (Reg *)NULL;
+
+EnvData *m3_env = (EnvData *)NULL;
+uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
+
+static void *std_app_buf;
+phys_addr_t std_app_buf_phys;
+
+static state_t state = { .cur_aid = PRIV_AID, .aid = INVAL_AID };
 
 static inline bool in_inval_mode(void)
 {
@@ -153,16 +154,17 @@ static int ioctl_insert_tlb(unsigned long arg)
 	uint64_t virt;
 	uint8_t perm;
 	BUG_ON(in_priv_mode());
-	if (!in_unpriv_mode()) {
+	if (!in_unpriv_mode())
 		pr_err("there is no activity registered\n");
-	}
+
 	virt = arg & PAGE_MASK;
 	perm = (uint8_t)(arg & 0xf);
 	phys = vaddr2paddr(virt);
 	if (phys == 0) {
-		pr_err("tlb insert: virtual address is not mapped\n");
+		pr_err("TLB insert: virtual address is not mapped\n");
 		return -EINVAL;
 	}
+
 	return (int)insert_tlb(state.cur_aid, virt, phys, perm);
 }
 
@@ -188,9 +190,8 @@ static int ioctl_noop(void)
 static int ioctl_noop_arg(unsigned long arg)
 {
 	NoopArg na;
-	if (copy_from_user(&na, (NoopArg *)arg, sizeof(NoopArg))) {
+	if (copy_from_user(&na, (NoopArg *)arg, sizeof(NoopArg)))
 		return -EACCES;
-	}
 	return na.arg1 + na.arg2;
 }
 
@@ -221,43 +222,43 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long pfn;
 	int ty = vma->vm_pgoff;
 
-	pr_info("tcu_dev_mmap: start=%#lx, end=%#lx, ty=%d\n", vma->vm_start,
-		vma->vm_end, ty);
-
 	switch (ty) {
-	case Type_TCU:
+	case MemType_TCU:
 		pfn = MMIO_UNPRIV_ADDR >> PAGE_SHIFT;
 		expected_size = MMIO_UNPRIV_SIZE;
 		io = 1;
 		break;
-	case Type_Environment:
+	case MemType_Environment:
 		pfn = ENV_START >> PAGE_SHIFT;
 		expected_size = PAGE_SIZE;
 		break;
-	case Type_StdRecvBuf:
-		pfn = std_buf_phys >> PAGE_SHIFT;
+	case MemType_StdRecvBuf:
+		pfn = std_app_buf_phys >> PAGE_SHIFT;
 		expected_size = PAGE_SIZE;
 		break;
 	default:
-		pr_err("tcu mmap invalid type: %d\n", ty);
+		pr_err("TCU mmap invalid type: %d\n", ty);
 		return -EINVAL;
 	}
 
-	/* We only want to support mapping the tcu mmio area */
+	// We only want to support mapping the tcu mmio area
 	if (size != expected_size) {
-		pr_err("tcu mmap unexpected size: %zu vs. %zu\n", size,
+		pr_err("TCU mmap unexpected size: %zu vs. %zu\n", size,
 		       expected_size);
 		return -EINVAL;
 	}
 
 	if (io) {
-		/* Remap-pfn-range will mark the range VM_IO */
-		res = io_remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
-	} else
-		res = remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
+		// Remap-pfn-range will mark the range VM_IO
+		res = io_remap_pfn_range(vma, vma->vm_start, pfn, size,
+					 vma->vm_page_prot);
+	} else {
+		res = remap_pfn_range(vma, vma->vm_start, pfn, size,
+				      vma->vm_page_prot);
+	}
 
 	if (res) {
-		pr_err("tcu mmap - remap_pfn_range failed\n");
+		pr_err("TCU mmap - remap_pfn_range failed\n");
 		return -EAGAIN;
 	}
 	return 0;
@@ -274,42 +275,6 @@ static struct file_operations fops = {
 	.mmap = tcu_dev_mmap,
 	.unlocked_ioctl = tcu_ioctl,
 };
-
-static dev_t create_tcu_dev(void)
-{
-	int retval;
-	struct device *tcu_device;
-	dev_t dev = 0;
-
-	retval = alloc_chrdev_region(&dev, TCU_MINOR, DEV_COUNT, "tcu");
-	if (retval < 0) {
-		pr_err("failed to allocate major number for tcu device\n");
-		return -1;
-	}
-	major = MAJOR(dev);
-	cdev_init(&cdev, &fops);
-	retval = cdev_add(&cdev, dev, DEV_COUNT);
-	if (retval < 0) {
-		pr_err("failed to add tcu device\n");
-		unregister_chrdev_region(dev, DEV_COUNT);
-		return -1;
-	}
-	dev_class = class_create(THIS_MODULE, "tcu");
-	if (IS_ERR(dev_class)) {
-		pr_err("failed to create device class for tcu device\n");
-		unregister_chrdev_region(dev, DEV_COUNT);
-		return -1;
-	}
-	tcu_device = device_create(dev_class, NULL, MKDEV(major, TCU_MINOR),
-				   NULL, "tcu");
-	if (IS_ERR(tcu_device)) {
-		pr_err("failed to create tcu device\n");
-		unregister_chrdev_region(dev, DEV_COUNT);
-		class_destroy(dev_class);
-		return -1;
-	}
-	return dev;
-}
 
 static void init_tileid_translation(void)
 {
@@ -338,44 +303,117 @@ static void init_tileid_translation(void)
 	}
 }
 
+static dev_t create_tcu_dev(void)
+{
+	struct device *tcu_device;
+	dev_t dev = 0;
+	int retval;
+
+	retval = alloc_chrdev_region(&dev, TCU_MINOR, DEV_COUNT, "tcu");
+	if (retval < 0) {
+		pr_err("failed to allocate major number for TCU device\n");
+		goto error;
+	}
+
+	major = MAJOR(dev);
+	cdev_init(&cdev, &fops);
+	retval = cdev_add(&cdev, dev, DEV_COUNT);
+	if (retval < 0) {
+		pr_err("failed to add TCU device\n");
+		goto error_add;
+	}
+
+	dev_class = class_create(THIS_MODULE, "tcu");
+	if (IS_ERR(dev_class)) {
+		pr_err("failed to create device class for TCU device\n");
+		goto error_add;
+	}
+
+	tcu_device = device_create(dev_class, NULL, MKDEV(major, TCU_MINOR),
+				   NULL, "tcu");
+	if (IS_ERR(tcu_device)) {
+		pr_err("failed to create TCU device\n");
+		goto error_create;
+	}
+
+	return dev;
+
+error_create:
+	class_destroy(dev_class);
+error_add:
+	unregister_chrdev_region(dev, DEV_COUNT);
+error:
+	return -1;
+}
+
+static void destroy_tcu_dev(void)
+{
+	dev_t tcu_dev = MKDEV(major, TCU_MINOR);
+	device_destroy(dev_class, tcu_dev);
+	unregister_chrdev_region(tcu_dev, DEV_COUNT);
+	class_destroy(dev_class);
+}
+
 static int __init tcu_init(void)
 {
 	dev_t dev;
 
+	// first map the environment to know the platform we're running on (some macros depend on it)
 	m3_env = (EnvData *)memremap(ENV_START, PAGE_SIZE, MEMREMAP_WB);
-	is_gem5 = m3_env->platform == 0;
+	if (!m3_env) {
+		pr_err("memremap for environment failed\n");
+		goto error;
+	}
 
 	dev = create_tcu_dev();
-	if (dev == (dev_t)-1) {
-		return -1;
-	}
+	if (dev == (dev_t)-1)
+		goto error_dev;
+
+	// map MMIO region; both unprivileged and privileged interface
 	unpriv_base = (uint64_t *)ioremap(MMIO_ADDR, MMIO_SIZE);
 	if (!unpriv_base) {
-		dev_t tcu_dev = MKDEV(major, TCU_MINOR);
-		pr_err("failed to ioremap the private tcu mmio interface\n");
-		device_destroy(dev_class, tcu_dev);
-		unregister_chrdev_region(dev, DEV_COUNT);
-		class_destroy(dev_class);
-		return -1;
+		pr_err("ioremap for the TCU's MMIO region failed\n");
+		goto error_mmio;
 	}
 	priv_base = unpriv_base + (MMIO_UNPRIV_SIZE / sizeof(uint64_t));
-	rcv_buf = (uint8_t *)memremap(SIDE_RBUF_ADDR, KPEX_RBUF_SIZE,
+
+	// map receive buffer for side calls
+	rcv_buf = (uint8_t *)memremap(TMUP_RBUF_ADDR, TMUP_RBUF_SIZE,
 				      MEMREMAP_WB);
+	if (!rcv_buf) {
+		pr_err("memremap for side call receive buffer failed\n");
+		goto error_sidebuf;
+	}
+
+	// map receive buffer for replies from the M³ kernel
 	rpl_buf = (uint8_t *)memremap(TILEMUX_RBUF_SPACE, KPEX_RBUF_SIZE,
 				      MEMREMAP_WB);
+	if (!rpl_buf) {
+		pr_err("memremap for TileMux receive buffer failed\n");
+		goto error_tmbuf;
+	}
+
+	// map send buffer for our messages to the M³ kernel
 	snd_buf = (uint8_t *)kmalloc(MAX_MSG_SIZE, GFP_KERNEL);
-	std_buf_phys = virt_to_phys(kmalloc(PAGE_SIZE, GFP_KERNEL));
+	if (!snd_buf) {
+		pr_err("kmalloc for send buffer failed");
+		goto error_sndbuf;
+	}
+	// messages need to be 16 byte aligned
+	BUG_ON(((uintptr_t)snd_buf) % 16 != 0);
+
+	// map buffer for standard application endpoints
+	std_app_buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!std_app_buf) {
+		pr_err("kmalloc for std buffer failed");
+		goto error_stdbuf;
+	}
+	std_app_buf_phys = virt_to_phys(std_app_buf);
 
 	init_tileid_translation();
 
-	// the message needs to be 16 byte aligned
-	BUG_ON(((uintptr_t)snd_buf) % 16 != 0);
-
-	pr_info("tcu ioctl register act: %#x\n", IOCTL_RGSTR_ACT);
-	pr_info("tcu ioctl tlb insert: %#lx\n", IOCTL_TLB_INSRT);
-	pr_info("tcu ioctl exit: %#x\n", IOCTL_UNREG_ACT);
-	pr_info("tcu ioctl noop: %#x\n", IOCTL_NOOP);
-	pr_info("tcu ioctl noop with arg: %#lx\n", IOCTL_NOOP_ARG);
+	pr_info("initialized TCU driver on platform %d\n",
+		(int)m3_env->platform);
 
 	wait_for_get_quota();
 	wait_for_set_quota();
@@ -383,18 +421,34 @@ static int __init tcu_init(void)
 	wait_for_get_quota();
 
 	return 0;
+
+error_stdbuf:
+	kfree(snd_buf);
+error_sndbuf:
+	memunmap(rpl_buf);
+error_tmbuf:
+	memunmap(rcv_buf);
+error_sidebuf:
+	iounmap(unpriv_base);
+error_mmio:
+	destroy_tcu_dev();
+error_dev:
+	memunmap(m3_env);
+error:
+	return -1;
 }
 
 static void __exit tcu_exit(void)
 {
-	dev_t tcu_dev = MKDEV(major, TCU_MINOR);
+	kfree(std_app_buf);
 	kfree(snd_buf);
-	iounmap((void *)unpriv_base);
+	memunmap(rpl_buf);
 	memunmap(rcv_buf);
-	device_destroy(dev_class, tcu_dev);
-	class_destroy(dev_class);
-	unregister_chrdev_region(tcu_dev, DEV_COUNT);
-	pr_info("removed tcu driver\n");
+	iounmap(unpriv_base);
+	destroy_tcu_dev();
+	memunmap(m3_env);
+	destroy_tcu_dev();
+	pr_info("removed TCU driver\n");
 }
 
 module_init(tcu_init);

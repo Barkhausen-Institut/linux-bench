@@ -10,13 +10,6 @@
 #include <linux/printk.h>
 #include <linux/sched.h>
 
-typedef uint64_t Reg;
-typedef uint64_t EpId;
-typedef uint64_t Label;
-typedef uint16_t ActId;
-typedef uint16_t TileId;
-typedef uint32_t Perm;
-
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 // privileged activity id
@@ -41,7 +34,7 @@ typedef uint32_t Perm;
 /// The receive EP for sidecalls from the kernel for TileMux
 #define TMSIDE_REP (PMEM_PROT_EPS + 2)
 
-#define TOTAL_EPS (is_gem5 ? 192 : 128)
+#define TOTAL_EPS (is_gem5() ? 192 : 128)
 /// The number of external registers
 #define EXT_REGS 2
 /// The number of unprivileged registers
@@ -53,17 +46,14 @@ typedef uint32_t Perm;
 
 #define MAX_MSG_SIZE 512
 
-// start address of the unprivileged und privileged tcu mmio region
-extern Reg *unpriv_base;
-extern Reg *priv_base;
+#define SIZE_OF_MSG_HEADER 32
 
-extern phys_addr_t std_buf_phys;
-
-extern EnvData *m3_env;
-
-extern uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
-
-extern bool is_gem5;
+typedef uint64_t Reg;
+typedef uint64_t EpId;
+typedef uint64_t Label;
+typedef uint16_t ActId;
+typedef uint16_t TileId;
+typedef uint32_t Perm;
 
 typedef enum PrivReg {
 	/// For core requests
@@ -137,6 +127,20 @@ typedef struct {
 	uint64_t size;
 	Perm perm;
 } EpInfo;
+
+// start address of the unprivileged und privileged tcu mmio region
+extern Reg *unpriv_base;
+extern Reg *priv_base;
+
+extern EnvData *m3_env;
+extern uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
+
+extern phys_addr_t std_app_buf_phys;
+
+static inline bool is_gem5(void)
+{
+	return m3_env->platform == 0;
+}
 
 static inline TileId nocid_to_tileid(uint16_t tile)
 {

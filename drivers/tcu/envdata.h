@@ -1,5 +1,5 @@
-#ifndef ENVDATA_H
-#define ENVDATA_H
+#ifndef TCU_ENVDATA_H
+#define TCU_ENVDATA_H
 
 #include "cfg.h"
 
@@ -43,4 +43,4 @@ typedef struct {
 	uint64_t data_len;
 } EnvData;
 
-#endif // ENVDATA_H
+#endif // TCU_ENVDATA_H

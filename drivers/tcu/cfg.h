@@ -1,5 +1,5 @@
-#ifndef CFG_H
-#define CFG_H
+#ifndef TCU_CFG_H
+#define TCU_CFG_H
 
 #include "tculib.h"
 
@@ -14,12 +14,15 @@
 #define STD_RBUF_ADDR (MEM_OFFSET + 2 * PAGE_SIZE)
 #define STD_RBUF_SIZE PAGE_SIZE
 
-#define TILEMUX_START (is_gem5 ? (MEM_OFFSET + 0x200000) : MEM_OFFSET)
+#define TILEMUX_START (is_gem5() ? (MEM_OFFSET + 0x200000) : MEM_OFFSET)
 #define TILEMUX_RBUF_SPACE (TILEMUX_START + 0xd00000)
 
 #define KPEX_RBUF_ORD 6
 #define KPEX_RBUF_SIZE (1 << KPEX_RBUF_ORD)
 
-#define SIDE_RBUF_ADDR (TILEMUX_RBUF_SPACE + KPEX_RBUF_SIZE)
+#define TMUP_RBUF_ORD 7
+#define TMUP_RBUF_SIZE (1 << TMUP_RBUF_ORD)
 
-#endif // CFG_H
+#define TMUP_RBUF_ADDR (TILEMUX_RBUF_SPACE + KPEX_RBUF_SIZE)
+
+#endif // TCU_CFG_H

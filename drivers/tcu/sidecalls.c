@@ -140,7 +140,7 @@ void wait_for_translate(void)
 		physaddr = ENV_START;
 		break;
 	case RBUF_STD_ADDR:
-		physaddr = std_buf_phys;
+		physaddr = std_app_buf_phys;
 		break;
 	default:
 		BUG();
