@@ -4,203 +4,228 @@
 #include <linux/string.h>
 #include <linux/printk.h>
 
-uint8_t *snd_buf = (uint8_t *)NULL;
-// for receiving sidecalls from m3 kernel
-uint8_t *rcv_buf = (uint8_t *)NULL;
-// for receiving replies from m3 kernel
-uint8_t *rpl_buf = (uint8_t *)NULL;
+typedef struct {
+	Reg cmd;
+	Reg arg1;
+	Reg addr;
+	Reg size;
+} TCUState;
 
-Error send_response(Response res, size_t request_offset)
+static Error send_response(struct tcu_device *tcu, Response res, size_t request_offset)
 {
 	size_t len = sizeof(Response);
-	BUG_ON(snd_buf == NULL);
-	memcpy(snd_buf, &res, len);
-	return reply_aligned(TMSIDE_REP, snd_buf, len, request_offset);
+	memcpy(tcu->snd_buf, &res, len);
+	return reply_aligned(tcu, TMSIDE_REP, tcu->snd_buf, len, request_offset);
 }
 
-void wait_for_get_quota(void)
+static void save_tcu_state(struct tcu_device *tcu, TCUState *state)
 {
-	DefaultRequest *req;
-	Response res;
-	size_t offset;
 	Error e;
-	do {
-		offset = fetch_msg(TMSIDE_REP);
-	} while (offset == ~(size_t)0);
-	req = (DefaultRequest *)(rcv_buf + offset + SIZE_OF_MSG_HEADER);
-	if (req->opcode != Sidecall_GET_QUOTA) {
-		pr_warn("wait_for_get_quota: received different sidecall: %llu\n",
-			req->opcode);
-		return;
-	}
-	res = (Response){ .error = 0,
-			  .val1 = ((uint64_t)1 << 32) | 1,
-			  .val2 = ((uint64_t)1 << 32) | 1 };
-	e = send_response(res, offset);
-	if (e) {
-		pr_warn("wait_for_get_quota: send_response failed: %s\n",
-			error_to_str(e));
-	}
+
+	// abort the current command, if there is any
+	e = abort_command(tcu, &state->cmd);
+	BUG_ON(e != Error_None);
+
+	state->arg1 = read_unpriv_reg(tcu, UnprivReg_ARG1);
+	state->addr = read_unpriv_reg(tcu, UnprivReg_DATA_ADDR);
+	state->size = read_unpriv_reg(tcu, UnprivReg_DATA_SIZE);
 }
 
-void wait_for_set_quota(void)
+static void restore_tcu_state(struct tcu_device *tcu, const TCUState *state)
 {
-	DefaultRequest *req;
-	Response res;
-	size_t offset;
-	Error e;
-	do {
-		offset = fetch_msg(TMSIDE_REP);
-	} while (offset == ~(size_t)0);
-	req = (DefaultRequest *)(rcv_buf + offset + SIZE_OF_MSG_HEADER);
-	if (req->opcode != Sidecall_SET_QUOTA) {
-		pr_warn("wait_for_set_quota: received different sidecall: %llu\n",
-			req->opcode);
-		return;
-	}
-	res = (Response){ .error = 0, .val1 = 0, .val2 = 0 };
-	e = send_response(res, offset);
-	if (e) {
-		pr_warn("wait_for_set_quota: send_response failed: %s\n",
-			error_to_str(e));
-	}
+	write_unpriv_reg(tcu, UnprivReg_ARG1, state->arg1);
+	write_unpriv_reg(tcu, UnprivReg_DATA_ADDR, state->addr);
+	write_unpriv_reg(tcu, UnprivReg_DATA_SIZE, state->size);
+    // always restore the command register, because the previous activity might have an error code
+    // in the command register or similar.
+	mb();
+	write_unpriv_reg(tcu, UnprivReg_COMMAND, state->cmd);
 }
 
-void wait_for_derive_quota(void)
+static void sidecall_act_init(struct tcu_device *tcu, const ActInit *req, Response *res)
 {
-	DefaultRequest *req;
-	Response res;
-	size_t offset;
-	Error e;
-	do {
-		offset = fetch_msg(TMSIDE_REP);
-	} while (offset == ~(size_t)0);
-	req = (DefaultRequest *)(rcv_buf + offset + SIZE_OF_MSG_HEADER);
-	if (req->opcode != Sidecall_DERIVE_QUOTA) {
-		pr_warn("wait_for_derive_quota: received different sidecall: %llu\n",
-			req->opcode);
-		return;
-	}
-	res = (Response){ .error = 0, .val1 = 1, .val2 = 1 };
-	e = send_response(res, offset);
-	if (e) {
-		pr_warn("wait_for_derive_quota: send_response failed: %s\n",
-			error_to_str(e));
-	}
+	dev_info(tcu->dev,
+		"sidecalls: ACT_INIT with act_sel: %llu, time_quota=%llu, pt_quota=%llu, eps_start=%llu\n",
+		req->act_sel, req->time_quota, req->pt_quota, req->eps_start);
 }
 
-ActId wait_for_act_init(void)
+static void sidecall_act_ctrl(struct tcu_device *tcu, const ActivityCtrl *req, Response *res)
 {
-	DefaultRequest *req;
-	ActInit *act_init;
-	Response res;
-	size_t offset;
-	Error e;
-	do {
-		offset = fetch_msg(TMSIDE_REP);
-	} while (offset == ~(size_t)0);
-	req = (DefaultRequest *)(rcv_buf + offset + SIZE_OF_MSG_HEADER);
-	if (req->opcode != Sidecall_ACT_INIT) {
-		pr_warn("wait_for_act_init: received different sidecall: %llu\n",
-			req->opcode);
-		return INVAL_AID;
-	}
-	act_init = (ActInit *)(rcv_buf + offset + SIZE_OF_MSG_HEADER);
-	pr_info("received act init with act_sel: %llu\n", act_init->act_sel);
-	res = (Response){ .error = 0, .val1 = 0, .val2 = 0 };
-	e = send_response(res, offset);
-	if (e) {
-		pr_warn("wait_for_act_init: send_response failed: %s\n",
-			error_to_str(e));
-	}
-	return act_init->act_sel;
+	dev_info(tcu->dev,
+		"sidecalls: ACT_CTRL with act_sel: %llu, act_op=%llu\n",
+		req->act_sel, req->act_op);
+
+	// switch to it in the handle_sidecalls loop
+	tcu->cur_act = req->act_sel;
 }
 
-void wait_for_translate(void)
+static void sidecall_get_quota(struct tcu_device *tcu, const GetQuota *req, Response *res)
 {
-	DefaultRequest *req;
-	Translate *translate;
-	Response res;
-	size_t offset;
-	Error e;
-	GlobAddr globaddr;
+	dev_info(tcu->dev,
+		"sidecalls: GET_QUOTA with time=%llu, pts=%llu\n",
+		req->time, req->pts);
+
+	res->val1 = ((uint64_t)1 << 32) | 1;
+	res->val2 = ((uint64_t)1 << 32) | 1;
+}
+
+static void sidecall_set_quota(struct tcu_device *tcu, const SetQuota *req, Response *res)
+{
+	dev_info(tcu->dev,
+		"sidecalls: SET_QUOTA with id=%llu, time=%llu, pts=%llu\n",
+		req->id, req->time, req->pts);
+}
+
+static void sidecall_derive_quota(struct tcu_device *tcu, const DeriveQuota *req, Response *res)
+{
+	dev_info(tcu->dev,
+		"sidecalls: DERIVE_QUOTA with parent_time=%llu, parent_pts=%llu, time=%llu, pts=%llu\n",
+		req->parent_time, req->parent_pts, req->time, req->pts);
+
+	res->val1 = 1;
+	res->val2 = 1;
+}
+
+static void sidecall_translate(struct tcu_device *tcu, const Translate *req, Response *res)
+{
 	Phys physaddr;
-	do {
-		offset = fetch_msg(TMSIDE_REP);
-	} while (offset == ~(size_t)0);
-	req = (DefaultRequest *)(rcv_buf + offset + SIZE_OF_MSG_HEADER);
-	if (req->opcode != Sidecall_TRANSLATE) {
-		pr_warn("wait_for_translate: received different sidecall: %llu\n",
-			req->opcode);
-	}
-	translate = (Translate *)(rcv_buf + offset + SIZE_OF_MSG_HEADER);
-	pr_info("translate virt addr %llx\n", translate->virt);
-	switch (translate->virt) {
+
+	dev_info(tcu->dev,
+		"sidecalls: TRANSLATE with act_sel=%llu, virt=%px, perm=%#llx\n",
+		req->act_sel, (void*)req->virt, req->perm);
+
+	switch (req->virt) {
 	case ENV_START:
 		physaddr = ENV_START;
 		break;
 	case RBUF_STD_ADDR:
-		physaddr = std_app_buf_phys;
+		physaddr = tcu->std_app_buf_phys;
 		break;
 	default:
 		BUG();
 	}
-	globaddr = phys_to_glob(physaddr);
-	res = (Response){ .error = 0, .val1 = globaddr, .val2 = 0 };
-	e = send_response(res, offset);
-	if (e) {
-		pr_warn("wait_for_translate failed: %s\n", error_to_str(e));
-	}
+
+	res->val1 = phys_to_glob(tcu, physaddr);
 }
 
-void wait_for_act_start(void)
+static void handle_sidecall(struct tcu_device *tcu, const DefaultRequest *req)
 {
-	DefaultRequest *req;
-	ActivityCtrl *act_ctrl;
-	Response res;
 	size_t offset;
 	Error e;
-	do {
-		offset = fetch_msg(TMSIDE_REP);
-	} while (offset == ~(size_t)0);
-	req = (DefaultRequest *)(rcv_buf + offset + SIZE_OF_MSG_HEADER);
-	if (req->opcode != Sidecall_ACT_CTRL) {
-		pr_warn("wait_for_act_start: received different sidecall: %llu\n",
-			req->opcode);
-		return;
+	Response res = (Response) {
+		.error = 0,
+		.val1 = 0,
+		.val2 = 0,
+	};
+
+	switch (req->opcode) {
+	case Sidecall_ACT_INIT:
+		sidecall_act_init(tcu, (ActInit*)req, &res);
+		break;
+	case Sidecall_ACT_CTRL:
+		sidecall_act_ctrl(tcu, (ActivityCtrl*)req, &res);
+		break;
+	case Sidecall_SET_QUOTA:
+		sidecall_set_quota(tcu, (SetQuota*)req, &res);
+		break;
+	case Sidecall_GET_QUOTA:
+		sidecall_get_quota(tcu, (GetQuota*)req, &res);
+		break;
+	case Sidecall_DERIVE_QUOTA:
+		sidecall_derive_quota(tcu, (DeriveQuota*)req, &res);
+		break;
+	case Sidecall_TRANSLATE:
+		sidecall_translate(tcu, (Translate*)req, &res);
+		break;
+	default:
+		dev_info(tcu->dev, "Ignoring side call %llu\n", req->opcode);
+		break;
 	}
-	act_ctrl = (ActivityCtrl *)(rcv_buf + offset + SIZE_OF_MSG_HEADER);
-	if (act_ctrl->act_op != ActivityOp_START) {
-		pr_warn("wait_for_act_start: act_op is not START: %llu\n",
-			act_ctrl->act_op);
-		return;
-	}
-	res = (Response){ .error = 0, .val1 = 0, .val2 = 0 };
-	e = send_response(res, offset);
+
+	offset = (uintptr_t)req - (uintptr_t)tcu->rcv_buf - SIZE_OF_MSG_HEADER;
+	e = send_response(tcu, res, offset);
 	if (e) {
-		pr_warn("wait_for_act_start: send_response failed: %s\n",
+		dev_warn(tcu->dev, "wait_for_get_quota: send_response failed: %s\n",
 			error_to_str(e));
 	}
 }
 
-Error wait_for_reply(void)
+void init_sidecalls(struct tcu_device *tcu)
 {
+	Reg our_act;
 	size_t offset;
-	Error e;
-	DefaultReply *r;
-	BUG_ON(rpl_buf == NULL);
-	do {
-		offset = fetch_msg(KPEX_REP);
-	} while (offset == ~(size_t)0);
-	e = ack_msg(KPEX_REP, offset);
-	if (e != Error_None) {
-		return e;
+
+	while (1) {
+		offset = fetch_msg(tcu, TMSIDE_REP);
+		if (offset == ~(size_t)0)
+			break;
+
+		dev_info(tcu->dev, "Got message @ %#zx\n", offset);
+		handle_sidecall(tcu, (DefaultRequest *)(tcu->rcv_buf + offset +
+						   SIZE_OF_MSG_HEADER));
 	}
-	r = (DefaultReply *)(rpl_buf + offset + SIZE_OF_MSG_HEADER);
-	return (Error)r->error;
+
+	our_act = xchg_activity(tcu, tcu->cur_act);
+	// TODO this is racy. As soon as we change the activity, we will get an interrupt for further
+	// messages to us (PRIV_AID). However, we might have already got a message between the last
+	// fetch and the xchg_activity. These cannot be handled here without risking that we get an
+	// interrupt during their handling. Thus, for now we simply panic if we really got a message
+	// between fetch and xchg_activity.
+	BUG_ON(((our_act >> 16) & 0xFFFF) != 0);
 }
 
-Error snd_rcv_sidecall_exit(ActId aid, uint64_t code)
+void handle_sidecalls(struct tcu_device *tcu, Reg our_act)
+{
+	TCUState state;
+	Reg old_act;
+	size_t offset;
+	Error e;
+
+	dev_info(tcu->dev, "Saving TCU state\n");
+	save_tcu_state(tcu, &state);
+
+	while (1) {
+		// change to our activity
+		old_act = xchg_activity(tcu, our_act);
+
+		dev_info(tcu->dev, "old_act=%#llx, our_act=%#llx\n", old_act, our_act);
+
+		offset = fetch_msg(tcu, TMSIDE_REP);
+		if (offset != ~(size_t)0) {
+			dev_info(tcu->dev, "Got message @ %#zx\n", offset);
+			handle_sidecall(tcu, (DefaultRequest *)(tcu->rcv_buf + offset +
+							   SIZE_OF_MSG_HEADER));
+		}
+
+		// check if the kernel answered a request from us
+		offset = fetch_msg(tcu, KPEX_REP);
+		while (offset != ~(size_t)0) {
+			dev_info(tcu->dev, "Acking message @ %#zx\n", offset);
+			e = ack_msg(tcu, KPEX_REP, offset);
+			BUG_ON(e != Error_None);
+			offset = fetch_msg(tcu, KPEX_REP);
+		}
+
+		// change back to old activity (or the just started one)
+		if(tcu->cur_act != INVAL_AID) {
+			our_act = xchg_activity(tcu, tcu->cur_act);
+			dev_info(tcu->dev, "Switched from %#llx to %#x\n", our_act, tcu->cur_act);
+		}
+		else {
+			our_act = xchg_activity(tcu, old_act);
+			dev_info(tcu->dev, "Switched from %#llx to %#llx\n", our_act, old_act);
+		}
+
+		// if no events arrived in the meantime, we're done
+		if (((our_act >> 16) & 0xFFFF) == 0)
+			break;
+	}
+
+	dev_info(tcu->dev, "Restoring TCU state\n");
+	restore_tcu_state(tcu, &state);
+}
+
+Error snd_rcv_sidecall_exit(struct tcu_device *tcu, ActId aid, uint64_t code)
 {
 	Error e;
 	Exit msg = {
@@ -209,36 +234,40 @@ Error snd_rcv_sidecall_exit(ActId aid, uint64_t code)
 		.code = code,
 	};
 	size_t len = sizeof(Exit);
-	BUG_ON(snd_buf == NULL);
-	memcpy(snd_buf, &msg, len);
-	e = send_aligned(KPEX_SEP, snd_buf, len, 0, KPEX_REP);
+
+	// switch to our activity
+	Reg cur_act;
+	cur_act = xchg_activity(tcu, PRIV_AID);
+
+	// send the message
+	memcpy(tcu->snd_buf, &msg, len);
+	e = send_aligned(tcu, KPEX_SEP, tcu->snd_buf, len, 0, KPEX_REP);
 	if (e != Error_None) {
-		pr_err("exit sidecall failed: %s\n", error_to_str(e));
+		dev_err(tcu->dev, "exit sidecall failed: %s\n", error_to_str(e));
 	};
-	e = wait_for_reply();
-	if (e != Error_None) {
-		pr_err("exit sidecall wait_for_reply failed: %s\n",
-		       error_to_str(e));
-	}
+
+	// switch to idle
+	cur_act = xchg_activity(tcu, INVAL_AID);
+	// TODO similar problem as with init_sidecalls. We are not calling this from the TCU interrupt
+	// handler (where we would be sure that this interrupt cannot happen again until we're finished)
+	// and thus interrupts can occur. We therefore cannot call handle_sidecalls to handle messages
+	// for us that arrived between the two xchg_activity calls. Thus, for now we simply panic if
+	// we received one.
+	BUG_ON(((cur_act >> 16) & 0xFFFF) != 0);
+
 	return e;
 }
 
-Error snd_rcv_sidecall_lx_act(void)
+Error snd_rcv_sidecall_lx_act(struct tcu_device *tcu)
 {
 	Error e;
 	LxAct msg = { .op = Sidecall_LX_ACT };
 	size_t len = sizeof(LxAct);
-	BUG_ON(snd_buf == NULL);
-	memcpy(snd_buf, &msg, len);
-	e = send_aligned(KPEX_SEP, snd_buf, len, 0, KPEX_REP);
+	memcpy(tcu->snd_buf, &msg, len);
+	e = send_aligned(tcu, KPEX_SEP, tcu->snd_buf, len, 0, KPEX_REP);
 	if (e != Error_None) {
-		pr_err("lx act sidecall failed: %s\n", error_to_str(e));
+		dev_err(tcu->dev, "lx act sidecall failed: %s\n", error_to_str(e));
 		return e;
-	}
-	e = wait_for_reply();
-	if (e != Error_None) {
-		pr_err("lx act sidecall wait_for_reply failed: %s\n",
-		       error_to_str(e));
 	}
 	return e;
 }

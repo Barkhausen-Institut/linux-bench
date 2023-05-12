@@ -12,7 +12,7 @@ typedef uint64_t GlobAddr;
 #define TILE_SHIFT 49
 #define TILE_OFFSET 0x4000
 
-static inline GlobAddr phys_to_glob(Phys addr)
+static inline GlobAddr phys_to_glob(struct tcu_device *tcu, Phys addr)
 {
 	EpId ep;
 	EpInfo info;
@@ -22,11 +22,11 @@ static inline GlobAddr phys_to_glob(Phys addr)
 	addr -= MEM_OFFSET;
 	ep = (addr >> 30) & 0x3;
 	offset = addr & 0x3fffffff;
-	info = unpack_mem_ep(ep);
-	print_ep_info(ep, info);
+	info = unpack_mem_ep(tcu, ep);
+	print_ep_info(tcu, ep, info);
 	res = ((TILE_OFFSET + (GlobAddr)info.tid) << TILE_SHIFT) |
 	      (offset + info.addr);
-	pr_info("Translated %#llx to %#llx\n", addr, res);
+	dev_info(tcu->dev, "Translated %#llx to %#llx\n", addr, res);
 	return res;
 }
 

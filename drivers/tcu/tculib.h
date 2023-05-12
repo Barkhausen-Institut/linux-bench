@@ -4,9 +4,10 @@
 #include "envdata.h"
 #include "tcuerr.h"
 
-#include <linux/kernel.h>
-#include <linux/io.h>
 #include <asm/barrier.h>
+#include <linux/cdev.h>
+#include <linux/io.h>
+#include <linux/kernel.h>
 #include <linux/printk.h>
 #include <linux/sched.h>
 
@@ -34,7 +35,7 @@
 /// The receive EP for sidecalls from the kernel for TileMux
 #define TMSIDE_REP (PMEM_PROT_EPS + 2)
 
-#define TOTAL_EPS (is_gem5() ? 192 : 128)
+#define TOTAL_EPS(tcu) (is_gem5(tcu) ? 192 : 128)
 /// The number of external registers
 #define EXT_REGS 2
 /// The number of unprivileged registers
@@ -54,6 +55,33 @@ typedef uint64_t Label;
 typedef uint16_t ActId;
 typedef uint16_t TileId;
 typedef uint32_t Perm;
+
+struct tcu_device {
+	struct device *dev;
+	unsigned int major;
+	struct cdev cdev;
+	struct class *dev_class;
+	struct device *char_dev;
+	int irq;
+
+	// start address of the unprivileged und privileged tcu mmio region
+	Reg *unpriv_base;
+	Reg *priv_base;
+
+	uint8_t *snd_buf;
+	// for receiving sidecalls from m3 kernel
+	uint8_t *rcv_buf;
+	// for receiving replies from m3 kernel
+	uint8_t *rpl_buf;
+
+	EnvData *m3_env;
+	uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
+
+	void *std_app_buf;
+	phys_addr_t std_app_buf_phys;
+
+	ActId cur_act;
+};
 
 typedef enum PrivReg {
 	/// For core requests
@@ -128,25 +156,21 @@ typedef struct {
 	Perm perm;
 } EpInfo;
 
-// start address of the unprivileged und privileged tcu mmio region
-extern Reg *unpriv_base;
-extern Reg *priv_base;
+struct corereq_foreign_msg {
+	ActId act;
+	EpId ep;
+};
 
-extern EnvData *m3_env;
-extern uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
-
-extern phys_addr_t std_app_buf_phys;
-
-static inline bool is_gem5(void)
+static inline bool is_gem5(struct tcu_device *tcu)
 {
-	return m3_env->platform == 0;
+	return tcu->m3_env->platform == 0;
 }
 
-static inline TileId nocid_to_tileid(uint16_t tile)
+static inline TileId nocid_to_tileid(struct tcu_device *tcu, uint16_t tile)
 {
 	size_t i;
 	for (i = 0; i < MAX_CHIPS * MAX_TILES; ++i) {
-		if (tile_ids[i] == tile) {
+		if (tcu->tile_ids[i] == tile) {
 			uint8_t chip = i / MAX_TILES;
 			uint8_t tile = i % MAX_TILES;
 			return (chip << 8) | tile;
@@ -155,53 +179,48 @@ static inline TileId nocid_to_tileid(uint16_t tile)
 	BUG_ON(true);
 }
 
-static inline void write_unpriv_reg(unsigned int index, Reg val)
+static inline void write_unpriv_reg(struct tcu_device *tcu, unsigned int index, Reg val)
 {
-	BUG_ON(unpriv_base == NULL);
-	iowrite64(val, unpriv_base + EXT_REGS + index);
+	iowrite64(val, tcu->unpriv_base + EXT_REGS + index);
 }
 
-static inline Reg read_unpriv_reg(unsigned int index)
+static inline Reg read_unpriv_reg(struct tcu_device *tcu, unsigned int index)
 {
-	BUG_ON(unpriv_base == NULL);
-	return ioread64(unpriv_base + EXT_REGS + index);
+	return ioread64(tcu->unpriv_base + EXT_REGS + index);
 }
 
-static inline Reg read_ep_reg(EpId ep, size_t reg)
+static inline Reg read_ep_reg(struct tcu_device *tcu, EpId ep, size_t reg)
 {
-	BUG_ON(unpriv_base == NULL);
-	return ioread64(unpriv_base + EXT_REGS + UNPRIV_REGS + EP_REGS * ep +
+	return ioread64(tcu->unpriv_base + EXT_REGS + UNPRIV_REGS + EP_REGS * ep +
 			reg);
 }
 
-static inline void write_priv_reg(unsigned int index, Reg val)
+static inline void write_priv_reg(struct tcu_device *tcu, unsigned int index, Reg val)
 {
-	BUG_ON(priv_base == NULL);
-	iowrite64(val, priv_base + index);
+	iowrite64(val, tcu->priv_base + index);
 }
 
-static inline Reg read_priv_reg(unsigned int index)
+static inline Reg read_priv_reg(struct tcu_device *tcu, unsigned int index)
 {
-	BUG_ON(priv_base == NULL);
-	return ioread64(priv_base + index);
+	return ioread64(tcu->priv_base + index);
 }
 
-static inline Error get_unpriv_error(void)
+static inline Error get_unpriv_error(struct tcu_device *tcu)
 {
 	Reg cmd;
 	while (true) {
-		cmd = read_unpriv_reg(UnprivReg_COMMAND);
+		cmd = read_unpriv_reg(tcu, UnprivReg_COMMAND);
 		if ((cmd & 0xf) == CmdOpCode_IDLE) {
 			return (Error)((cmd >> 20) & 0x1f);
 		}
 	}
 }
 
-static inline Error get_priv_error(void)
+static inline Error get_priv_error(struct tcu_device *tcu)
 {
 	Reg cmd;
 	while (true) {
-		cmd = read_priv_reg(PrivReg_PRIV_CMD);
+		cmd = read_priv_reg(tcu, PrivReg_PRIV_CMD);
 		if ((cmd & 0xf) == PrivCmdOpCode_IDLE) {
 			return (Error)((cmd >> 4) & 0xf);
 		}
@@ -213,20 +232,24 @@ static inline Reg build_cmd(EpId ep, CmdOpCode cmd, Reg arg)
 	return (arg << 25) | ((Reg)ep << 4) | cmd;
 }
 
-Error insert_tlb(uint16_t asid, uint64_t virt, uint64_t phys, uint8_t perm);
-Error xchg_activity(Reg actid);
-Error perform_send_reply(uint64_t msg_addr, Reg cmd);
-Error send_aligned(EpId ep, uint8_t *msg, size_t len, Label reply_lbl,
+Error insert_tlb(struct tcu_device *tcu, uint16_t asid, uint64_t virt, uint64_t phys, uint8_t perm);
+Error abort_command(struct tcu_device *tcu, Reg *cmd);
+Reg xchg_activity(struct tcu_device *tcu, Reg new_act);
+bool get_core_req(struct tcu_device *tcu, struct corereq_foreign_msg *core_req);
+void set_foreign_resp(struct tcu_device *tcu);
+Error perform_send_reply(struct tcu_device *tcu, uint64_t msg_addr, Reg cmd);
+Error send_aligned(struct tcu_device *tcu, EpId ep, uint8_t *msg, size_t len, Label reply_lbl,
 		   EpId reply_ep);
-Error reply_aligned(EpId ep, uint8_t *reply, size_t len, size_t msg_off);
+Error reply_aligned(struct tcu_device *tcu, EpId ep, uint8_t *reply, size_t len, size_t msg_off);
 // returns ~(size_t)0 if there is no message or there was an error
-size_t fetch_msg(EpId ep);
-Error ack_msg(EpId ep, size_t msg_off);
+size_t fetch_msg(struct tcu_device *tcu, EpId ep);
+Error ack_msg(struct tcu_device *tcu, EpId ep, size_t msg_off);
+void ack_irq(struct tcu_device *tcu, int irq);
 
-void print_ep_info(EpId ep, EpInfo i);
-EpInfo unpack_mem_ep(EpId ep);
+void print_ep_info(struct tcu_device *tcu, EpId ep, EpInfo i);
+EpInfo unpack_mem_ep(struct tcu_device *tcu, EpId ep);
 
-void tcu_print(const char *str);
-void tcu_printf(const char *fmt, ...);
+void tcu_print(struct tcu_device *tcu, const char *str);
+void tcu_printf(struct tcu_device *tcu, const char *fmt, ...);
 
 #endif // TCULIB_H

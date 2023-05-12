@@ -46,6 +46,20 @@ typedef struct {
 	uint64_t pts;
 } GetQuota;
 
+typedef struct {
+	uint64_t op;
+	uint64_t id;
+	uint64_t time;
+	uint64_t pts;
+} SetQuota;
+
+typedef struct {
+	uint64_t parent_time;
+	uint64_t parent_pts;
+	uint64_t time;
+	uint64_t pts;
+} DeriveQuota;
+
 typedef enum {
 	Sidecall_EXIT = 0,
 	Sidecall_LX_ACT = 1,
@@ -79,22 +93,9 @@ typedef struct {
 	uint64_t val2;
 } Response;
 
-extern uint8_t *snd_buf;
-// for receiving sidecalls from m3 kernel
-extern uint8_t *rcv_buf;
-// for receiving replies from m3 kernel
-extern uint8_t *rpl_buf;
-
-Error send_response(Response res, size_t request_offset);
-
-void wait_for_get_quota(void);
-void wait_for_set_quota(void);
-void wait_for_derive_quota(void);
-ActId wait_for_act_init(void);
-void wait_for_translate(void);
-void wait_for_act_start(void);
-Error wait_for_reply(void);
-Error snd_rcv_sidecall_exit(ActId aid, uint64_t code);
-Error snd_rcv_sidecall_lx_act(void);
+void init_sidecalls(struct tcu_device *tcu);
+void handle_sidecalls(struct tcu_device *tcu, Reg our_act);
+Error snd_rcv_sidecall_exit(struct tcu_device *tcu, ActId aid, uint64_t code);
+Error snd_rcv_sidecall_lx_act(struct tcu_device *tcu);
 
 #endif // TCU_SIDECALLS_H
