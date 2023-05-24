@@ -316,12 +316,6 @@ static dev_t create_tcu_dev(struct tcu_device *tcu, struct platform_device *pdev
 
 	dev_info(tcu->dev, "using IRQ %d\n", tcu->irq);
 
-	retval = request_irq(tcu->irq, tcu_irq_handler, IRQF_SHARED, dev_name(dev), dev);
-	if (retval) {
-		dev_err(dev, "failed to request TCU IRQ\n");
-		goto error_irq;
-	}
-
 	return dev_no;
 
 error_irq:
@@ -346,6 +340,7 @@ static int tcu_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	dev_t dev_no;
+	int retval;
 
 	tcu = kmalloc(sizeof(struct tcu_device), GFP_KERNEL);
 	if (!tcu) {
@@ -414,8 +409,18 @@ static int tcu_probe(struct platform_device *pdev)
 
 	init_sidecalls(tcu);
 
+	retval = request_irq(tcu->irq, tcu_irq_handler, IRQF_SHARED, dev_name(dev), dev);
+	if (retval) {
+		dev_err(dev, "failed to request TCU IRQ\n");
+		goto error_irq;
+	}
+
+	dev_info(tcu->dev, "initialization done\n");
+
 	return 0;
 
+error_irq:
+	kfree(tcu->std_app_buf);
 error_stdbuf:
 	kfree(tcu->snd_buf);
 error_sndbuf:
