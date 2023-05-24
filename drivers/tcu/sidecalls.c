@@ -259,17 +259,3 @@ Error snd_rcv_sidecall_exit(struct tcu_device *tcu, ActId aid, uint64_t code)
 
 	return e;
 }
-
-Error snd_rcv_sidecall_lx_act(struct tcu_device *tcu)
-{
-	Error e;
-	LxAct msg = { .op = Sidecall_LX_ACT };
-	size_t len = sizeof(LxAct);
-	memcpy(tcu->snd_buf, &msg, len);
-	e = send_aligned(tcu, KPEX_SEP, tcu->snd_buf, len, 0, KPEX_REP);
-	if (e != Error_None) {
-		dev_err(tcu->dev, "lx act sidecall failed: %s\n", error_to_str(e));
-		return e;
-	}
-	return e;
-}

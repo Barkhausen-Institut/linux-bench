@@ -62,8 +62,6 @@ typedef struct {
 
 typedef enum {
 	Sidecall_EXIT = 0,
-	Sidecall_LX_ACT = 1,
-	Sidecall_NOOP = 2,
 } Calls;
 
 typedef struct {
