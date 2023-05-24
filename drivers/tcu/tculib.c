@@ -156,7 +156,8 @@ void ack_irq(struct tcu_device *tcu, int irq)
 		write_priv_reg(tcu, (0x1030 + (irq - 1)) / sizeof(Reg), 0);
 	}
 	else {
-		// TODO
+		Reg irq = read_priv_reg(tcu, PrivReg_CLEAR_IRQ);
+		write_priv_reg(tcu, PrivReg_CLEAR_IRQ, irq);
 	}
 }
 
