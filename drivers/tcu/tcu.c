@@ -378,16 +378,14 @@ static int tcu_probe(struct platform_device *pdev)
 	tcu->priv_base = tcu->unpriv_base + (MMIO_UNPRIV_SIZE / sizeof(uint64_t));
 
 	// map receive buffer for side calls
-	tcu->rcv_buf = (uint8_t *)memremap(TMUP_RBUF_ADDR(tcu), TMUP_RBUF_SIZE,
-				      MEMREMAP_WB);
+	tcu->rcv_buf = (uint8_t *)memremap(TMUP_RBUF_ADDR, TMUP_RBUF_SIZE, MEMREMAP_WB);
 	if (!tcu->rcv_buf) {
 		dev_err(dev, "memremap for side call receive buffer failed\n");
 		goto error_sidebuf;
 	}
 
 	// map receive buffer for replies from the M³ kernel
-	tcu->rpl_buf = (uint8_t *)memremap(TILEMUX_RBUF_SPACE(tcu), KPEX_RBUF_SIZE,
-				      MEMREMAP_WB);
+	tcu->rpl_buf = (uint8_t *)memremap(TILEMUX_RBUF_SPACE, KPEX_RBUF_SIZE, MEMREMAP_WB);
 	if (!tcu->rpl_buf) {
 		dev_err(dev, "memremap for TileMux receive buffer failed\n");
 		goto error_tmbuf;
