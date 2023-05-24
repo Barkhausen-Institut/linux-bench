@@ -155,6 +155,8 @@ void init_sidecalls(struct tcu_device *tcu)
 	Reg our_act;
 	size_t offset;
 
+	dev_info(tcu->dev, "initializing sidecalls\n");
+
 	while (1) {
 		offset = fetch_msg(tcu, TMSIDE_REP);
 		if (offset == ~(size_t)0)
