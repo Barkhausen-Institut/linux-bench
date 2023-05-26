@@ -53,6 +53,9 @@
 #include <linux/slab.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
+#include <asm/sbi.h>
+
+#define SBI_PRINT                           1
 
 /*
  * Register offsets
@@ -286,7 +289,11 @@ static int sifive_serial_is_txfifo_full(struct sifive_serial_port *ssp)
  */
 static void __ssp_transmit_char(struct sifive_serial_port *ssp, int ch)
 {
+#ifdef SBI_PRINT
+    sbi_console_putchar(ch);
+#else
 	__ssp_writel(ch, SIFIVE_SERIAL_TXDATA_OFFS, ssp);
+#endif
 }
 
 /**
