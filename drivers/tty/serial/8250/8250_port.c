@@ -34,8 +34,11 @@
 
 #include <asm/io.h>
 #include <asm/irq.h>
+#include <asm/sbi.h>
 
 #include "8250.h"
+
+#define SBI_PRINT                           1
 
 /* Nuvoton NPCM timeout register */
 #define UART_NPCM_TOR          7
@@ -1798,6 +1801,9 @@ void serial8250_tx_chars(struct uart_8250_port *up)
 	int count;
 
 	if (port->x_char) {
+#if SBI_PRINT
+		sbi_console_putchar(port->x_char);
+#endif
 		serial_out(up, UART_TX, port->x_char);
 		port->icount.tx++;
 		port->x_char = 0;
@@ -1814,6 +1820,9 @@ void serial8250_tx_chars(struct uart_8250_port *up)
 
 	count = up->tx_loadsz;
 	do {
+#if SBI_PRINT
+		sbi_console_putchar(xmit->buf[xmit->tail]);
+#endif
 		serial_out(up, UART_TX, xmit->buf[xmit->tail]);
 		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
 		port->icount.tx++;
@@ -3239,10 +3248,14 @@ EXPORT_SYMBOL_GPL(serial8250_set_defaults);
 
 static void serial8250_console_putchar(struct uart_port *port, int ch)
 {
+#ifdef SBI_PRINT
+    sbi_console_putchar(ch);
+#else
 	struct uart_8250_port *up = up_to_u8250p(port);
 
 	wait_for_xmitr(up, UART_LSR_THRE);
 	serial_port_out(port, UART_TX, ch);
+#endif
 }
 
 /*
