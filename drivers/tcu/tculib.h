@@ -37,7 +37,7 @@
 
 #define TOTAL_EPS(tcu) (is_gem5(tcu) ? 192 : 128)
 /// The number of external registers
-#define EXT_REGS 2
+#define EXT_REGS 3
 /// The number of unprivileged registers
 #define UNPRIV_REGS 6
 /// The number of registers per EP
@@ -86,14 +86,16 @@ struct tcu_device {
 typedef enum PrivReg {
 	/// For core requests
 	PrivReg_CORE_REQ = 0x0,
+	/// Controls the privileged interface
+	PrivReg_PRIV_CTRL = 0x1,
 	/// For privileged commands
-	PrivReg_PRIV_CMD = 0x1,
+	PrivReg_PRIV_CMD = 0x2,
 	/// The argument for privileged commands
-	PrivReg_PRIV_CMD_ARG = 0x2,
+	PrivReg_PRIV_CMD_ARG = 0x3,
 	/// The current activity
-	PrivReg_CUR_ACT = 0x3,
+	PrivReg_CUR_ACT = 0x4,
 	/// Used to ack IRQ requests
-	PrivReg_CLEAR_IRQ = 0x4,
+	PrivReg_CLEAR_IRQ = 0x5,
 } PrivReg;
 
 typedef enum {

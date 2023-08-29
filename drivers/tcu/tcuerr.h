@@ -32,6 +32,7 @@ typedef enum Error {
 	Error_MsgUnaligned,
 	Error_TLBMiss,
 	Error_TLBFull,
+	Error_NoPMPEp,
 	// SW Errors
 	Error_InvArgs,
 	Error_ActivityGone,

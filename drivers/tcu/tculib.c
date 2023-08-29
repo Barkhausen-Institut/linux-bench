@@ -75,9 +75,9 @@ Reg xchg_activity(struct tcu_device *tcu, Reg new_act)
 bool get_core_req(struct tcu_device *tcu, struct corereq_foreign_msg *core_req)
 {
 	Reg req = read_priv_reg(tcu, PrivReg_CORE_REQ);
-	if((req & 0x3) == 0x2) {
+	if((req & 0x7) == 0x2) {
 		core_req->act = req >> 48;
-		core_req->ep = (req >> 2) & 0xFFFF;
+		core_req->ep = (req >> 3) & 0xFFFF;
 		return true;
 	}
 	return false;
