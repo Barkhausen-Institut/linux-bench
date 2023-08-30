@@ -74,7 +74,7 @@ struct tcu_device {
 	// for receiving replies from m3 kernel
 	uint8_t *rpl_buf;
 
-	EnvData *m3_env;
+	uint64_t platform;
 	uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
 
 	void *std_app_buf;
@@ -165,7 +165,7 @@ struct corereq_foreign_msg {
 
 static inline bool is_gem5(struct tcu_device *tcu)
 {
-	return tcu->m3_env->platform == 0;
+	return tcu->platform == 0;
 }
 
 static inline TileId nocid_to_tileid(struct tcu_device *tcu, uint16_t tile)

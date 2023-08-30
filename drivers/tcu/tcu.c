@@ -248,16 +248,17 @@ static struct file_operations fops = {
 	.unlocked_ioctl = tcu_ioctl,
 };
 
-static void init_tileid_translation(struct tcu_device *tcu)
+static void init_tileid_translation(struct tcu_device *tcu,
+									uint64_t *raw_tile_ids, size_t raw_tile_count)
 {
-	size_t i, count = tcu->m3_env->raw_tile_count;
+	size_t i, count = raw_tile_count;
 
 	uint8_t log_chip = 0;
 	uint8_t log_tile = 0;
 	int phys_chip = -1;
 
 	for (i = 0; i < count; ++i) {
-		TileId tid = tcu->m3_env->raw_tile_ids[i];
+		TileId tid = raw_tile_ids[i];
 		uint8_t cid = tid >> 8;
 
 		if (phys_chip != -1) {
@@ -339,6 +340,7 @@ static void destroy_tcu_dev(struct tcu_device *tcu)
 static int tcu_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	EnvData *m3_env;
 	dev_t dev_no;
 	int retval;
 
@@ -350,19 +352,22 @@ static int tcu_probe(struct platform_device *pdev)
 	tcu->dev = dev;
 	tcu->cur_act = INVAL_AID;
 
-	// first map the environment to know the platform we're running on (some macros depend on it)
-	tcu->m3_env = (EnvData *)memremap(ENV_START, PAGE_SIZE, MEMREMAP_WB);
-	if (!tcu->m3_env) {
+	// map the environment to know the platform we're running on (some macros depend on it)
+	m3_env = (EnvData *)memremap(ENV_START, PAGE_SIZE, MEMREMAP_WB);
+	if (!m3_env) {
 		dev_err(dev, "memremap for environment failed\n");
 		goto error_env;
 	}
 
-	dev_info(tcu->dev, "initializing TCU driver on platform %d\n",
-		(int)tcu->m3_env->platform);
+	tcu->platform = m3_env->platform;
+	dev_info(tcu->dev, "initializing TCU driver on platform %d\n", (int)tcu->platform);
+
+	init_tileid_translation(tcu, m3_env->raw_tile_ids, m3_env->raw_tile_count);
+	memunmap(m3_env);
 
 	dev_no = create_tcu_dev(tcu, pdev);
 	if (dev_no == (dev_t)-1)
-		goto error_dev;
+		goto error_env;
 
 	// map MMIO region; both unprivileged and privileged interface
 	tcu->unpriv_base = (uint64_t *)ioremap(MMIO_ADDR, MMIO_SIZE);
@@ -403,8 +408,6 @@ static int tcu_probe(struct platform_device *pdev)
 	}
 	tcu->std_app_buf_phys = virt_to_phys(tcu->std_app_buf);
 
-	init_tileid_translation(tcu);
-
 	platform_set_drvdata(pdev, tcu);
 
 	init_sidecalls(tcu);
@@ -431,8 +434,6 @@ error_sidebuf:
 	iounmap(tcu->unpriv_base);
 error_mmio:
 	destroy_tcu_dev(tcu);
-error_dev:
-	memunmap(tcu->m3_env);
 error_env:
 	kfree(tcu);
 error:
@@ -448,7 +449,6 @@ static int tcu_remove(struct platform_device *pdev)
 	memunmap(tcu->rpl_buf);
 	memunmap(tcu->rcv_buf);
 	iounmap(tcu->unpriv_base);
-	memunmap(tcu->m3_env);
 	destroy_tcu_dev(tcu);
 	kfree(tcu);
 
