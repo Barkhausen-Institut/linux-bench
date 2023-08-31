@@ -1,6 +1,9 @@
+#include "activity.h"
 #include "globaddr.h"
 #include "sidecalls.h"
+#include "tculib.h"
 
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/printk.h>
 
@@ -44,9 +47,15 @@ static void restore_tcu_state(struct tcu_device *tcu, const TCUState *state)
 
 static void sidecall_act_init(struct tcu_device *tcu, const ActInit *req, Response *res)
 {
+	int err;
+
 	dev_info(tcu->dev,
 		"sidecalls: ACT_INIT with act_sel: %llu, time_quota=%llu, pt_quota=%llu, eps_start=%llu\n",
 		req->act_sel, req->time_quota, req->pt_quota, req->eps_start);
+
+	err = create_activity(tcu, (ActId)req->act_sel);
+	if (err < 0)
+		res->error = Error_NoSpace;
 }
 
 static void sidecall_act_ctrl(struct tcu_device *tcu, const ActivityCtrl *req, Response *res)
@@ -55,8 +64,24 @@ static void sidecall_act_ctrl(struct tcu_device *tcu, const ActivityCtrl *req, R
 		"sidecalls: ACT_CTRL with act_sel: %llu, act_op=%llu\n",
 		req->act_sel, req->act_op);
 
-	// switch to it in the handle_sidecalls loop
-	tcu->cur_act = req->act_sel;
+	switch(req->act_op) {
+		case ActivityOp_START: {
+		    if (tcu->waiting_task != NULL) {
+		        dev_info(tcu->dev, "sidecalls: waking up starter\n");
+		    	wake_up_process(tcu->waiting_task);
+		    }
+
+			// switch to it in the handle_sidecalls loop
+			if (tcu->cur_act_id == INVAL_AID) {
+				tcu->cur_act = id_to_activity(tcu, (ActId)req->act_sel);
+				tcu->cur_act_id = req->act_sel;
+			}
+			break;
+		}
+		case ActivityOp_STOP:
+			// TODO handle ACT_STOP operation
+			break;
+	}
 }
 
 static void sidecall_get_quota(struct tcu_device *tcu, const GetQuota *req, Response *res)
@@ -88,18 +113,25 @@ static void sidecall_derive_quota(struct tcu_device *tcu, const DeriveQuota *req
 
 static void sidecall_translate(struct tcu_device *tcu, const Translate *req, Response *res)
 {
+	struct m3_activity *act;
 	Phys physaddr;
 
 	dev_info(tcu->dev,
 		"sidecalls: TRANSLATE with act_sel=%llu, virt=%px, perm=%#llx\n",
 		req->act_sel, (void*)req->virt, req->perm);
 
+	act = id_to_activity(tcu, (ActId)req->act_sel);
+	if (act == NULL) {
+		res->error = Error_InvArgs;
+		return;
+	}
+
 	switch (req->virt) {
 	case ENV_START:
-		physaddr = ENV_START;
+		physaddr = act->env_phys;
 		break;
 	case RBUF_STD_ADDR:
-		physaddr = tcu->std_app_buf_phys;
+		physaddr = act->std_app_buf_phys;
 		break;
 	default:
 		BUG();
@@ -167,7 +199,7 @@ void init_sidecalls(struct tcu_device *tcu)
 						   SIZE_OF_MSG_HEADER));
 	}
 
-	our_act = xchg_activity(tcu, tcu->cur_act);
+	our_act = xchg_activity(tcu, tcu->cur_act_id);
 	// TODO this is racy. As soon as we change the activity, we will get an interrupt for further
 	// messages to us (PRIV_AID). However, we might have already got a message between the last
 	// fetch and the xchg_activity. These cannot be handled here without risking that we get an
@@ -209,9 +241,9 @@ void handle_sidecalls(struct tcu_device *tcu, Reg our_act)
 		}
 
 		// change back to old activity (or the just started one)
-		if(tcu->cur_act != INVAL_AID) {
-			our_act = xchg_activity(tcu, tcu->cur_act);
-			dev_info(tcu->dev, "Switched from %#llx to %#x\n", our_act, tcu->cur_act);
+		if(tcu->cur_act_id != INVAL_AID) {
+			our_act = xchg_activity(tcu, tcu->cur_act_id);
+			dev_info(tcu->dev, "Switched from %#llx to %#x\n", our_act, tcu->cur_act_id);
 		}
 		else {
 			our_act = xchg_activity(tcu, old_act);

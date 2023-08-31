@@ -1,3 +1,4 @@
+#include "activity.h"
 #include "sidecalls.h"
 #include "tculib.h"
 #include "cfg.h"
@@ -23,16 +24,18 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
+// wait for a new activity to start
+#define IOCTL_WAIT_FOR_ACT _IOR('q', 1, ActId*)
 // register an activity
-#define IOCTL_RGSTR_ACT _IO('q', 1)
+#define IOCTL_REG_ACT _IOW('q', 2, unsigned long)
 // inserts an entry in tcu tlb, uses current activity id
-#define IOCTL_TLB_INSRT _IOW('q', 2, unsigned long)
+#define IOCTL_TLB_INSRT _IOW('q', 3, unsigned long)
 // forgets about an activity
-#define IOCTL_UNREG_ACT _IO('q', 3)
+#define IOCTL_UNREG_ACT _IOW('q', 4, unsigned long)
 // noop
-#define IOCTL_NOOP _IO('q', 4)
+#define IOCTL_NOOP _IO('q', 5)
 // noop with argument
-#define IOCTL_NOOP_ARG _IOW('q', 5, NoopArg *)
+#define IOCTL_NOOP_ARG _IOW('q', 6, NoopArg *)
 
 typedef struct {
 	uint64_t arg1;
@@ -74,10 +77,28 @@ static unsigned long vaddr2paddr(unsigned long address)
 	return phys;
 }
 
-static int ioctl_register_activity(struct tcu_device *tcu)
+static int ioctl_wait_for_activity(struct tcu_device *tcu, unsigned long arg)
 {
-	if (tcu->cur_act == INVAL_AID)
-		return -EAGAIN;
+	struct m3_activity *act = wait_activity(tcu);
+	if (!act)
+		return -EBUSY;
+
+	if (copy_to_user((void*)arg, &act->id, sizeof(act->id)))
+		return -EINVAL;
+
+	return 0;
+}
+
+static int ioctl_reg_activity(struct tcu_device *tcu, unsigned long arg)
+{
+	struct m3_activity *act;
+
+	act = id_to_activity(tcu, (ActId)arg);
+	if (act == NULL || act->pid != 0)
+		return -EINVAL;
+
+	start_activity(act, get_current()->pid);
+
 	return 0;
 }
 
@@ -87,7 +108,7 @@ static int ioctl_insert_tlb(struct tcu_device *tcu, unsigned long arg)
 	uint64_t virt;
 	uint8_t perm;
 
-	if (tcu->cur_act == INVAL_AID) {
+	if (tcu->cur_act_id == INVAL_AID) {
 		dev_err(tcu->dev, "there is no activity registered\n");
 		return -EINVAL;
 	}
@@ -100,20 +121,29 @@ static int ioctl_insert_tlb(struct tcu_device *tcu, unsigned long arg)
 		return -EINVAL;
 	}
 
-	return (int)insert_tlb(tcu, tcu->cur_act, virt, phys, perm);
+	return (int)insert_tlb(tcu, tcu->cur_act_id, virt, phys, perm);
 }
 
-static int ioctl_unregister_activity(struct tcu_device *tcu)
+static int ioctl_unreg_activity(struct tcu_device *tcu, unsigned long arg)
 {
+	struct m3_activity *act;
 	Error e;
 
-	if (tcu->cur_act == INVAL_AID) {
-		dev_err(tcu->dev, "there is no activity registered\n");
+	act = id_to_activity(tcu, (ActId)arg);
+	if (act == NULL || act->pid == 0) {
+		dev_err(tcu->dev, "activity %d not found\n", (ActId)arg);
 		return -EINVAL;
 	}
 
-	e = snd_rcv_sidecall_exit(tcu, tcu->cur_act, 0);
-	return (int)e;
+	// send exit sidecall
+	e = snd_rcv_sidecall_exit(tcu, act->id, 0);
+	if (e != Error_None) {
+		dev_err(tcu->dev, "exit sidecall for %d failed: %d", act->id, e);
+		return -EINVAL;
+	}
+
+	remove_activity(tcu, act);
+	return 0;
 }
 
 static int ioctl_noop(struct tcu_device *tcu)
@@ -133,12 +163,14 @@ static long int tcu_ioctl(struct file *f,
 						  unsigned int cmd, unsigned long arg)
 {
 	switch (cmd) {
-	case IOCTL_RGSTR_ACT:
-		return ioctl_register_activity(tcu);
+	case IOCTL_WAIT_FOR_ACT:
+		return ioctl_wait_for_activity(tcu, arg);
+	case IOCTL_REG_ACT:
+		return ioctl_reg_activity(tcu, arg);
 	case IOCTL_TLB_INSRT:
 		return ioctl_insert_tlb(tcu, arg);
 	case IOCTL_UNREG_ACT:
-		return ioctl_unregister_activity(tcu);
+		return ioctl_unreg_activity(tcu, arg);
 	case IOCTL_NOOP:
 		return ioctl_noop(tcu);
 	case IOCTL_NOOP_ARG:
@@ -157,6 +189,10 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long pfn;
 	int ty = vma->vm_pgoff;
 
+	struct m3_activity *act = pid_to_activity(tcu, get_current()->pid);
+	if (act == NULL)
+		return -EINVAL;
+
 	switch (ty) {
 	case MemType_TCU:
 		pfn = MMIO_UNPRIV_ADDR >> PAGE_SHIFT;
@@ -164,24 +200,27 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 		io = 1;
 		break;
 	case MemType_Environment:
-		pfn = ENV_START >> PAGE_SHIFT;
+		pfn = act->env_phys >> PAGE_SHIFT;
 		expected_size = PAGE_SIZE;
 		break;
 	case MemType_StdRecvBuf:
-		pfn = tcu->std_app_buf_phys >> PAGE_SHIFT;
+		pfn = act->std_app_buf_phys >> PAGE_SHIFT;
 		expected_size = PAGE_SIZE;
 		break;
 	default:
-		dev_err(tcu->dev, "TCU mmap invalid type: %d\n", ty);
+		dev_err(tcu->dev, "mmap invalid type: %d\n", ty);
 		return -EINVAL;
 	}
 
 	// We only want to support mapping the tcu mmio area
 	if (size != expected_size) {
-		dev_err(tcu->dev, "TCU mmap unexpected size: %zu vs. %zu\n", size,
+		dev_err(tcu->dev, "mmap unexpected size: %zu vs. %zu\n", size,
 		       expected_size);
 		return -EINVAL;
 	}
+
+	dev_info(tcu->dev, "mmap %#lx to %#lx (%zu pages)\n",
+		vma->vm_start, pfn << PAGE_SHIFT, expected_size / PAGE_SIZE);
 
 	if (io) {
 		// Remap-pfn-range will mark the range VM_IO
@@ -193,7 +232,7 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 	}
 
 	if (res) {
-		dev_err(tcu->dev, "TCU mmap - remap_pfn_range failed\n");
+		dev_err(tcu->dev, "mmap - remap_pfn_range failed\n");
 		return -EAGAIN;
 	}
 	return 0;
@@ -218,7 +257,7 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 			handle_sidecalls(tcu, PRIV_AID | (1 << 16));
 		}
 		// if it's for the current app, increase message counter
-		else if(core_req.act == tcu->cur_act) {
+		else if(core_req.act == tcu->cur_act_id) {
 			// switch to idle to get the current message count
 			old_act = xchg_activity(tcu, INVAL_AID);
 			// add message
@@ -350,7 +389,11 @@ static int tcu_probe(struct platform_device *pdev)
 		goto error;
 	}
 	tcu->dev = dev;
-	tcu->cur_act = INVAL_AID;
+	tcu->waiting_task = NULL;
+	tcu->wait_list = NULL;
+	tcu->run_list = NULL;
+	tcu->cur_act = NULL;
+	tcu->cur_act_id = INVAL_AID;
 
 	// map the environment to know the platform we're running on (some macros depend on it)
 	m3_env = (EnvData *)memremap(ENV_START, PAGE_SIZE, MEMREMAP_WB);
@@ -400,14 +443,6 @@ static int tcu_probe(struct platform_device *pdev)
 	// messages need to be 16 byte aligned
 	BUG_ON(((uintptr_t)tcu->snd_buf) % 16 != 0);
 
-	// map buffer for standard application endpoints
-	tcu->std_app_buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
-	if (!tcu->std_app_buf) {
-		dev_err(dev, "kmalloc for std buffer failed");
-		goto error_stdbuf;
-	}
-	tcu->std_app_buf_phys = virt_to_phys(tcu->std_app_buf);
-
 	platform_set_drvdata(pdev, tcu);
 
 	init_sidecalls(tcu);
@@ -423,8 +458,6 @@ static int tcu_probe(struct platform_device *pdev)
 	return 0;
 
 error_irq:
-	kfree(tcu->std_app_buf);
-error_stdbuf:
 	kfree(tcu->snd_buf);
 error_sndbuf:
 	memunmap(tcu->rpl_buf);
@@ -444,7 +477,6 @@ static int tcu_remove(struct platform_device *pdev)
 {
 	struct tcu_device *tcu = platform_get_drvdata(pdev);
 
-	kfree(tcu->std_app_buf);
 	kfree(tcu->snd_buf);
 	memunmap(tcu->rpl_buf);
 	memunmap(tcu->rcv_buf);

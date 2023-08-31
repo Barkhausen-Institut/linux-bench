@@ -56,6 +56,8 @@ typedef uint16_t ActId;
 typedef uint16_t TileId;
 typedef uint32_t Perm;
 
+struct m3_activity;
+
 struct tcu_device {
 	struct device *dev;
 	unsigned int major;
@@ -77,10 +79,12 @@ struct tcu_device {
 	uint64_t platform;
 	uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
 
-	void *std_app_buf;
-	phys_addr_t std_app_buf_phys;
+	struct task_struct *waiting_task;
 
-	ActId cur_act;
+	struct m3_activity *wait_list;
+	struct m3_activity *run_list;
+	struct m3_activity *cur_act;
+	ActId cur_act_id;
 };
 
 typedef enum PrivReg {
