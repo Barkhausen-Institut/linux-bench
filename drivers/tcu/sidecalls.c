@@ -186,22 +186,26 @@ void init_sidecalls(struct tcu_device *tcu)
 	dev_info(tcu->dev, "initializing sidecalls\n");
 
 	while (1) {
-		offset = fetch_msg(tcu, TMSIDE_REP);
-		if (offset == ~(size_t)0)
+		while (1) {
+			offset = fetch_msg(tcu, TMSIDE_REP);
+			if (offset == ~(size_t)0)
+				break;
+
+			dev_info(tcu->dev, "Got message @ %#zx\n", offset);
+			handle_sidecall(tcu, (DefaultRequest *)(tcu->rcv_buf + offset +
+							   SIZE_OF_MSG_HEADER));
+		}
+
+		// now switch to the first activity
+		our_act = xchg_activity(tcu, tcu->cur_act_id);
+
+		// if no events arrived in the meantime (between the last fetch and xchg_act), we're done
+		if (((our_act >> 16) & 0xFFFF) == 0)
 			break;
 
-		dev_info(tcu->dev, "Got message @ %#zx\n", offset);
-		handle_sidecall(tcu, (DefaultRequest *)(tcu->rcv_buf + offset +
-						   SIZE_OF_MSG_HEADER));
+		// switch back to our activity and try again
+		tcu->cur_act_id = xchg_activity(tcu, our_act);
 	}
-
-	our_act = xchg_activity(tcu, tcu->cur_act_id);
-	// TODO this is racy. As soon as we change the activity, we will get an interrupt for further
-	// messages to us (PRIV_AID). However, we might have already got a message between the last
-	// fetch and the xchg_activity. These cannot be handled here without risking that we get an
-	// interrupt during their handling. Thus, for now we simply panic if we really got a message
-	// between fetch and xchg_activity.
-	BUG_ON(((our_act >> 16) & 0xFFFF) != 0);
 }
 
 void handle_sidecalls(struct tcu_device *tcu, Reg our_act)
@@ -272,18 +276,14 @@ Error snd_rcv_sidecall_exit(struct tcu_device *tcu, ActId aid, uint64_t code)
 	// send the message
 	memcpy(tcu->snd_buf, &msg, len);
 	e = send_aligned(tcu, KPEX_SEP, tcu->snd_buf, len, 0, KPEX_REP);
-	if (e != Error_None) {
+	if (e != Error_None)
 		dev_err(tcu->dev, "exit sidecall failed: %s\n", error_to_str(e));
-	};
 
 	// switch to idle
 	cur_act = xchg_activity(tcu, INVAL_AID);
-	// TODO similar problem as with init_sidecalls. We are not calling this from the TCU interrupt
-	// handler (where we would be sure that this interrupt cannot happen again until we're finished)
-	// and thus interrupts can occur. We therefore cannot call handle_sidecalls to handle messages
-	// for us that arrived between the two xchg_activity calls. Thus, for now we simply panic if
-	// we received one.
-	BUG_ON(((cur_act >> 16) & 0xFFFF) != 0);
+	// if we received messages in the meantime, handle them before we leave
+	if (((cur_act >> 16) & 0xFFFF) != 0)
+		handle_sidecalls(tcu, cur_act);
 
 	return e;
 }

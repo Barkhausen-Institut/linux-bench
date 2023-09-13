@@ -164,36 +164,57 @@ static int ioctl_noop_arg(struct tcu_device *tcu, unsigned long arg)
 static long int tcu_ioctl(struct file *f,
 						  unsigned int cmd, unsigned long arg)
 {
+	unsigned long flags;
+	long int res = -EINVAL;
+
+	if (cmd != IOCTL_WAIT_FOR_ACT)
+    	spin_lock_irqsave(&tcu->lock, flags);
+
 	switch (cmd) {
 	case IOCTL_WAIT_FOR_ACT:
-		return ioctl_wait_for_activity(tcu, arg);
+		res = ioctl_wait_for_activity(tcu, arg);
+		break;
 	case IOCTL_REG_ACT:
-		return ioctl_reg_activity(tcu, arg);
+		res = ioctl_reg_activity(tcu, arg);
+		break;
 	case IOCTL_TLB_INSRT:
-		return ioctl_insert_tlb(tcu, arg);
+		res = ioctl_insert_tlb(tcu, arg);
+		break;
 	case IOCTL_UNREG_ACT:
-		return ioctl_unreg_activity(tcu, arg);
+		res = ioctl_unreg_activity(tcu, arg);
+		break;
 	case IOCTL_NOOP:
-		return ioctl_noop(tcu);
+		res = ioctl_noop(tcu);
+		break;
 	case IOCTL_NOOP_ARG:
-		return ioctl_noop_arg(tcu, arg);
+		res = ioctl_noop_arg(tcu, arg);
+		break;
 	default:
 		dev_err(tcu->dev, "received ioctl call without unknown magic number\n");
-		return -EINVAL;
+		break;
 	}
-	return 0;
+
+	if (cmd != IOCTL_WAIT_FOR_ACT)
+		spin_unlock_irqrestore(&tcu->lock, flags);
+
+	return res;
 }
 
 static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	int res, io = 0;
 	size_t expected_size, size = vma->vm_end - vma->vm_start;
-	unsigned long pfn;
+	unsigned long pfn, flags;
 	int ty = vma->vm_pgoff;
+	struct m3_activity *act;
 
-	struct m3_activity *act = pid_to_activity(tcu, get_current()->pid);
-	if (act == NULL)
+    spin_lock_irqsave(&tcu->lock, flags);
+
+	act = pid_to_activity(tcu, get_current()->pid);
+	if (act == NULL) {
+    	spin_unlock_irqrestore(&tcu->lock, flags);
 		return -EINVAL;
+	}
 
 	switch (ty) {
 	case MemType_TCU:
@@ -211,8 +232,11 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 		break;
 	default:
 		dev_err(tcu->dev, "mmap invalid type: %d\n", ty);
+    	spin_unlock_irqrestore(&tcu->lock, flags);
 		return -EINVAL;
 	}
+
+	spin_unlock_irqrestore(&tcu->lock, flags);
 
 	// We only want to support mapping the tcu mmio area
 	if (size != expected_size) {
@@ -237,6 +261,7 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 		dev_err(tcu->dev, "mmap - remap_pfn_range failed\n");
 		return -EAGAIN;
 	}
+
 	return 0;
 }
 
@@ -245,6 +270,8 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 	struct corereq_foreign_msg core_req;
 	struct m3_activity *act;
 	Reg old_act;
+
+	spin_lock(&tcu->lock);
 
 	dev_info(tcu->dev, "Got TCU irq %d\n", irq);
 
@@ -257,6 +284,7 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 			// we know that we're received a message and the TCU hasn't increased the counter. we
 			// also know that we always handle all messages before we switch back to another
 			// activity. therefore, we can just set one message here.
+			// TODO maybe we want to execute that in process ctx rather than in interrupt ctx?
 			handle_sidecalls(tcu, PRIV_AID | (1 << 16));
 		}
 		// if it's for the current app, increase message counter
@@ -284,16 +312,21 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 
 	ack_irq(tcu, irq);
 
+    spin_unlock(&tcu->lock);
+
 	return IRQ_HANDLED;
 }
 
 void tcu_task_switch(bool preempt, struct task_struct *prev, struct task_struct *next)
 {
 	struct m3_activity *p_act, *n_act;
+    unsigned long flags;
 
 	// module not initialized yet?
 	if (!tcu)
 		return;
+
+    spin_lock_irqsave(&tcu->lock, flags);
 
 	p_act = tcu->cur_act;
 	BUG_ON(p_act != NULL && p_act->pid != prev->pid);
@@ -305,6 +338,8 @@ void tcu_task_switch(bool preempt, struct task_struct *prev, struct task_struct 
 
 	    switch_activity(tcu, p_act, n_act);
 	}
+
+    spin_unlock_irqrestore(&tcu->lock, flags);
 }
 
 #define DEV_COUNT 1
@@ -423,6 +458,7 @@ static int tcu_probe(struct platform_device *pdev)
 	tcu->run_list = NULL;
 	tcu->cur_act = NULL;
 	tcu->cur_act_id = INVAL_AID;
+	spin_lock_init(&tcu->lock);
 
 	// map the environment to know the platform we're running on (some macros depend on it)
 	m3_env = (EnvData *)memremap(ENV_START, PAGE_SIZE, MEMREMAP_WB);

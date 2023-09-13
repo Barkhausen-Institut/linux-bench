@@ -84,17 +84,24 @@ struct m3_activity *pid_to_activity(struct tcu_device *tcu, pid_t pid)
 
 struct m3_activity *wait_activity(struct tcu_device *tcu)
 {
+    unsigned long flags;
     struct m3_activity *act;
     ActId id;
 
-    if (tcu->waiting_task != NULL)
+    spin_lock_irqsave(&tcu->lock, flags);
+
+    if (tcu->waiting_task != NULL) {
+        spin_unlock_irqrestore(&tcu->lock, flags);
         return NULL;
+    }
 
     while (tcu->wait_list == NULL) {
         dev_info(tcu->dev, "waiting for new activity\n");
         tcu->waiting_task = get_current();
+        spin_unlock_irqrestore(&tcu->lock, flags);
         set_current_state(TASK_INTERRUPTIBLE);
         schedule();
+        spin_lock_irqsave(&tcu->lock, flags);
         dev_info(tcu->dev, "woke up from waiting for new activity\n");
         tcu->waiting_task = NULL;
     }
@@ -108,6 +115,8 @@ struct m3_activity *wait_activity(struct tcu_device *tcu)
     tcu->wait_list = act->next;
     act->next = tcu->run_list;
     tcu->run_list = act;
+
+    spin_unlock_irqrestore(&tcu->lock, flags);
 
     return act;
 }

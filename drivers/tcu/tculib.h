@@ -65,6 +65,7 @@ struct tcu_device {
 	struct class *dev_class;
 	struct device *char_dev;
 	int irq;
+	spinlock_t lock;
 
 	// start address of the unprivileged und privileged tcu mmio region
 	Reg *unpriv_base;
