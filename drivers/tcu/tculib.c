@@ -69,7 +69,7 @@ Reg xchg_activity(struct tcu_device *tcu, Reg new_act)
 	write_priv_reg(tcu, PrivReg_PRIV_CMD, (new_act << 9) | PrivCmdOpCode_XCHG_ACT);
 	e = get_priv_error(tcu);
 	BUG_ON(e != Error_None);
-	return read_priv_reg(tcu, PrivReg_PRIV_CMD_ARG);
+	return read_priv_reg(tcu, PrivReg_PRIV_CMD_ARG) & 0xFFFFFFFF;
 }
 
 bool get_core_req(struct tcu_device *tcu, struct corereq_foreign_msg *core_req)
