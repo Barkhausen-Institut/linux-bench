@@ -4917,6 +4917,8 @@ restart:
 	BUG();
 }
 
+extern void tcu_task_switch(bool preempt, struct task_struct *prev, struct task_struct *next);
+
 /*
  * __schedule() is the main scheduler function.
  *
@@ -5072,6 +5074,7 @@ static void __sched notrace __schedule(bool preempt)
 		migrate_disable_switch(rq, prev);
 		psi_sched_switch(prev, next, !task_on_rq_queued(prev));
 
+		tcu_task_switch(preempt, prev, next);
 		trace_sched_switch(preempt, prev, next);
 
 		/* Also unlocks the rq: */

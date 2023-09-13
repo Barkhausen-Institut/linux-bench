@@ -71,11 +71,7 @@ static void sidecall_act_ctrl(struct tcu_device *tcu, const ActivityCtrl *req, R
 		    	wake_up_process(tcu->waiting_task);
 		    }
 
-			// switch to it in the handle_sidecalls loop
-			if (tcu->cur_act_id == INVAL_AID) {
-				tcu->cur_act = id_to_activity(tcu, (ActId)req->act_sel);
-				tcu->cur_act_id = req->act_sel;
-			}
+		    // TODO mark the activity as "ready to pick up"
 			break;
 		}
 		case ActivityOp_STOP:

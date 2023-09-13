@@ -4,7 +4,9 @@
 
 int create_activity(struct tcu_device *tcu, ActId id)
 {
+    size_t i;
     struct m3_activity *act = kmalloc(sizeof(struct m3_activity), GFP_ATOMIC);
+
     if (!act) {
         dev_err(tcu->dev, "kmalloc for new activity");
         return -ENOMEM;
@@ -12,6 +14,9 @@ int create_activity(struct tcu_device *tcu, ActId id)
 
     act->id = id;
     act->pid = 0;
+    act->cur_act = id;
+    for(i = 0; i < sizeof(act->tcu_regs) / sizeof(act->tcu_regs[0]); ++i)
+        act->tcu_regs[i] = 0;
 
     // allocate environment for application
     act->env = kmalloc(PAGE_SIZE, GFP_ATOMIC);
@@ -105,9 +110,71 @@ struct m3_activity *wait_activity(struct tcu_device *tcu)
     return act;
 }
 
-void start_activity(struct m3_activity *act, pid_t pid)
+void start_activity(struct tcu_device *tcu, struct m3_activity *act, pid_t pid)
 {
+    EnvData *env;
+
     act->pid = pid;
+    dev_info(tcu->dev, "Started activity %d (pid %d)\n", act->id, pid);
+
+    // set our tile to shared to make apps yield instead of use the TCU sleep
+    // TODO improve that
+    env = (EnvData*)act->env;
+    env->shared = 1;
+}
+
+void save_activity(struct tcu_device *tcu, struct m3_activity *act)
+{
+    Reg old_cmd;
+    Error err;
+
+    dev_info(tcu->dev, "Saving state of activity %d (pid %d)\n", act->id, act->pid);
+
+    // abort the current command, if there is any
+    err = abort_command(tcu, &old_cmd);
+    BUG_ON(err != Error_None);
+
+    act->tcu_regs[0] = old_cmd;
+    act->tcu_regs[1] = read_unpriv_reg(tcu, UnprivReg_ARG1);
+    act->tcu_regs[2] = read_unpriv_reg(tcu, UnprivReg_DATA_ADDR);
+    act->tcu_regs[3] = read_unpriv_reg(tcu, UnprivReg_DATA_SIZE);
+}
+
+void switch_activity(struct tcu_device *tcu, struct m3_activity *p_act, struct m3_activity *n_act)
+{
+    Reg prev_reg, next_reg;
+
+    if (p_act) {
+        save_activity(tcu, p_act);
+    }
+
+    next_reg = n_act ? n_act->cur_act : INVAL_AID;
+    prev_reg = xchg_activity(tcu, next_reg);
+
+    dev_info(tcu->dev, "TCU-activity: %#llx\n", next_reg);
+
+    if (p_act)
+        p_act->cur_act = prev_reg;
+
+    if (n_act) {
+        restore_activity(tcu, n_act);
+    }
+
+    tcu->cur_act = n_act;
+    tcu->cur_act_id = next_reg & 0xFFFF;
+}
+
+void restore_activity(struct tcu_device *tcu, struct m3_activity *act)
+{
+    dev_info(tcu->dev, "Restoring state of activity %d (pid %d)\n", act->id, act->pid);
+
+    write_unpriv_reg(tcu, UnprivReg_ARG1, act->tcu_regs[1]);
+    write_unpriv_reg(tcu, UnprivReg_DATA_ADDR, act->tcu_regs[2]);
+    write_unpriv_reg(tcu, UnprivReg_DATA_SIZE, act->tcu_regs[3]);
+    // always restore the command register, because the previous activity might have an error code
+    // in the command register or similar.
+    mb();
+    write_unpriv_reg(tcu, UnprivReg_COMMAND, act->tcu_regs[0]);
 }
 
 void remove_activity(struct tcu_device *tcu, struct m3_activity *act)

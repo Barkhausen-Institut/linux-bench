@@ -97,7 +97,9 @@ static int ioctl_reg_activity(struct tcu_device *tcu, unsigned long arg)
 	if (act == NULL || act->pid != 0)
 		return -EINVAL;
 
-	start_activity(act, get_current()->pid);
+	start_activity(tcu, act, get_current()->pid);
+	BUG_ON(tcu->cur_act == act);
+    switch_activity(tcu, tcu->cur_act, act);
 
 	return 0;
 }
@@ -241,6 +243,7 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 {
 	struct corereq_foreign_msg core_req;
+	struct m3_activity *act;
 	Reg old_act;
 
 	dev_info(tcu->dev, "Got TCU irq %d\n", irq);
@@ -265,8 +268,14 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 			// we know that idle never receives messages, therefore there is nothing else to do
 			xchg_activity(tcu, old_act);
 		}
-		else
-			dev_warn(tcu->dev, "Received message for unknown activity %u\n", core_req.act);
+		else {
+			act = id_to_activity(tcu, core_req.act);
+			if (act == NULL)
+				dev_warn(tcu->dev, "Received message for unknown activity %u\n", core_req.act);
+			else
+				act->cur_act += 1 << 16;
+			// TODO switch to the task
+		}
 
 		set_foreign_resp(tcu);
 	}
@@ -276,6 +285,26 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 	ack_irq(tcu, irq);
 
 	return IRQ_HANDLED;
+}
+
+void tcu_task_switch(bool preempt, struct task_struct *prev, struct task_struct *next)
+{
+	struct m3_activity *p_act, *n_act;
+
+	// module not initialized yet?
+	if (!tcu)
+		return;
+
+	p_act = tcu->cur_act;
+	BUG_ON(p_act != NULL && p_act->pid != prev->pid);
+	n_act = pid_to_activity(tcu, next->pid);
+
+	if (p_act != NULL || n_act != NULL) {
+	    dev_info(tcu->dev, "switching from %d:%s to %d:%s (%d)\n",
+	        prev->pid, prev->comm, next->pid, next->comm, preempt);
+
+	    switch_activity(tcu, p_act, n_act);
+	}
 }
 
 #define DEV_COUNT 1
