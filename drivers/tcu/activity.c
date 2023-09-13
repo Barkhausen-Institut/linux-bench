@@ -37,6 +37,8 @@ int create_activity(struct tcu_device *tcu, ActId id)
     }
     act->std_app_buf_phys = virt_to_phys(act->std_app_buf);
 
+    dev_info(tcu->dev, "Created activity (%d)\n", id);
+
     // enqueue in wait list
     act->next = tcu->wait_list;
     tcu->wait_list = act;
@@ -180,6 +182,8 @@ void restore_activity(struct tcu_device *tcu, struct m3_activity *act)
 void remove_activity(struct tcu_device *tcu, struct m3_activity *act)
 {
     struct m3_activity *pact;
+
+    dev_info(tcu->dev, "Removing activity %d (pid %d)\n", act->id, act->pid);
 
     // find previous activity
     pact = tcu->run_list;
