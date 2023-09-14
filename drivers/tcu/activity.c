@@ -18,6 +18,10 @@ int create_activity(struct tcu_device *tcu, ActId id)
     for(i = 0; i < sizeof(act->tcu_regs) / sizeof(act->tcu_regs[0]); ++i)
         act->tcu_regs[i] = 0;
 
+    act->custom_phys = 0;
+    act->custom_len = 0;
+    act->custom_prot = 0;
+
     // allocate environment for application
     act->env = kmalloc(PAGE_SIZE, GFP_ATOMIC);
     if (!act->env) {

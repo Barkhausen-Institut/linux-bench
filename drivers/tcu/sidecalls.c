@@ -3,6 +3,7 @@
 #include "sidecalls.h"
 #include "tculib.h"
 
+#include <asm/mman.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/printk.h>
@@ -107,6 +108,36 @@ static void sidecall_derive_quota(struct tcu_device *tcu, const SideCallDeriveQu
 	res->val2 = 1;
 }
 
+static void sidecall_map(struct tcu_device *tcu, const SideCallMap *req, Response *res)
+{
+	struct m3_activity *act;
+
+	dev_info(tcu->dev,
+		"sidecalls: MAP with act_sel=%llu, virt=%px, global=%px, pages=%llu, perm=%#llx\n",
+		req->act_sel, (void*)req->virt, (void*)req->global, req->pages, req->perm);
+
+	act = id_to_activity(tcu, (ActId)req->act_sel);
+	if (act == NULL) {
+		res->error = Error_InvArgs;
+		return;
+	}
+
+	act->custom_phys = glob_to_phys(tcu, req->global);
+	if (act->custom_phys == 0) {
+		res->error = Error_InvArgs;
+		return;
+	}
+
+	act->custom_len = req->pages * PAGE_SIZE;
+	act->custom_prot = 0;
+	if (req->perm & MapFlag_R)
+		act->custom_prot |= PROT_READ;
+	if (req->perm & MapFlag_W)
+		act->custom_prot |= PROT_WRITE;
+	if (req->perm & MapFlag_X)
+		act->custom_prot |= PROT_EXEC;
+}
+
 static void sidecall_translate(struct tcu_device *tcu, const SideCallTranslate *req, Response *res)
 {
 	struct m3_activity *act;
@@ -161,6 +192,9 @@ static void handle_sidecall(struct tcu_device *tcu, const DefaultRequest *req)
 		break;
 	case Sidecall_DERIVE_QUOTA:
 		sidecall_derive_quota(tcu, (SideCallDeriveQuota*)req, &res);
+		break;
+	case Sidecall_MAP:
+		sidecall_map(tcu, (SideCallMap*)req, &res);
 		break;
 	case Sidecall_TRANSLATE:
 		sidecall_translate(tcu, (SideCallTranslate*)req, &res);

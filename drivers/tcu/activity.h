@@ -14,6 +14,10 @@ struct m3_activity {
     void *std_app_buf;
     phys_addr_t std_app_buf_phys;
 
+    unsigned long custom_len;
+    phys_addr_t custom_phys;
+    unsigned long custom_prot;
+
     Reg cur_act;
     Reg tcu_regs[4];
 };

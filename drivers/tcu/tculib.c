@@ -169,13 +169,19 @@ void print_ep_info(struct tcu_device *tcu, EpId ep, EpInfo i)
 
 EpInfo unpack_mem_ep(struct tcu_device *tcu, EpId ep)
 {
+	EpInfo info;
 	Reg r0 = read_ep_reg(tcu, ep, 0);
 	Reg r1 = read_ep_reg(tcu, ep, 1);
 	Reg r2 = read_ep_reg(tcu, ep, 2);
-	TileId tid = nocid_to_tileid(tcu, (r0 >> 23) & 0x3fff);
-	Perm perm = (r0 >> 19) & 0x3;
-	BUG_ON((r0 & 0x7) != 0x3); // ep must be a memory ep
-	return (EpInfo){ .tid = tid, .addr = r1, .size = r2, .perm = perm };
+	if ((r0 & 0x7) != 0x3)
+		info.size = 0;
+	else {
+		info.tid = nocid_to_tileid(tcu, (r0 >> 23) & 0x3fff);
+		info.perm = (r0 >> 19) & 0x3;
+		info.addr = r1;
+		info.size = r2;
+	}
+	return info;
 }
 
 void tcu_print(struct tcu_device *tcu, const char *str)

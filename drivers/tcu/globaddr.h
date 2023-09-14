@@ -23,11 +23,47 @@ static inline GlobAddr phys_to_glob(struct tcu_device *tcu, Phys addr)
 	ep = (addr >> 30) & 0x3;
 	offset = addr & 0x3fffffff;
 	info = unpack_mem_ep(tcu, ep);
+	BUG_ON(info.size == 0); // must be a memory EP
 	print_ep_info(tcu, ep, info);
 	res = ((TILE_OFFSET + (GlobAddr)info.tid) << TILE_SHIFT) |
 	      (offset + info.addr);
 	dev_info(tcu->dev, "Translated %#llx to %#llx\n", addr, res);
 	return res;
+}
+
+static inline Phys glob_to_phys(struct tcu_device *tcu, GlobAddr glob)
+{
+	EpId ep;
+	EpInfo info;
+	TileId tile;
+	uint64_t offset;
+
+	if (glob < ((GlobAddr)TILE_OFFSET << TILE_SHIFT)) {
+		dev_info(tcu->dev, "Translated %#llx to %#llx\n", glob, glob);
+		return glob;
+	}
+
+	tile = (glob >> TILE_SHIFT) - TILE_OFFSET;
+	offset = glob & (((GlobAddr)1 << TILE_SHIFT) - 1);
+
+    // find memory EP that contains the address
+	for(ep = 0; ep < PMEM_PROT_EPS; ++ep) {
+		info = unpack_mem_ep(tcu, ep);
+
+		// ignore non-memory EPs
+		if (info.size == 0)
+			continue;
+
+		if (info.tid == tile && offset >= info.addr && offset < info.addr + info.size) {
+			// TODO validate access permissions?
+			Phys phys = ep << 30 | (MEM_OFFSET + (offset - info.addr));
+			dev_info(tcu->dev, "Translated %#llx to %#llx\n", glob, phys);
+			return phys;
+		}
+    }
+
+	dev_info(tcu->dev, "Translation of %#llx failed\n", glob);
+	return 0;
 }
 
 #endif // TCU_GLOBADDR_H

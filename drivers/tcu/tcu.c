@@ -4,6 +4,9 @@
 #include "cfg.h"
 #include "envdata.h"
 
+// PROT_READ etc.
+#include <asm/mman.h>
+
 // module_init, module_exit
 #include <linux/module.h>
 
@@ -44,6 +47,7 @@ enum {
 	MemType_TCU,
 	MemType_Environment,
 	MemType_StdRecvBuf,
+	MemType_Custom,
 };
 
 static struct tcu_device *tcu = NULL;
@@ -190,6 +194,7 @@ static long int tcu_ioctl(struct file *f,
 static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	int res, io = 0;
+	unsigned long expected_prot;
 	size_t expected_size, size = vma->vm_end - vma->vm_start;
 	unsigned long pfn, flags;
 	int ty = vma->vm_pgoff;
@@ -207,15 +212,28 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 	case MemType_TCU:
 		pfn = MMIO_UNPRIV_ADDR >> PAGE_SHIFT;
 		expected_size = MMIO_UNPRIV_SIZE;
+		expected_prot = PROT_READ | PROT_WRITE;
 		io = 1;
 		break;
 	case MemType_Environment:
 		pfn = act->env_phys >> PAGE_SHIFT;
 		expected_size = PAGE_SIZE;
+		expected_prot = PROT_READ | PROT_WRITE;
 		break;
 	case MemType_StdRecvBuf:
 		pfn = act->std_app_buf_phys >> PAGE_SHIFT;
 		expected_size = PAGE_SIZE;
+		expected_prot = PROT_READ;
+		break;
+	case MemType_Custom:
+		if (!act->custom_len) {
+	    	spin_unlock_irqrestore(&tcu->lock, flags);
+			return -EINVAL;
+		}
+		pfn = act->custom_phys >> PAGE_SHIFT;
+		expected_size = act->custom_len;
+		expected_prot = PROT_READ;
+		act->custom_len = 0;
 		break;
 	default:
 		dev_err(tcu->dev, "mmap invalid type: %d\n", ty);
@@ -225,10 +243,15 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 
 	spin_unlock_irqrestore(&tcu->lock, flags);
 
-	// We only want to support mapping the tcu mmio area
+	// check if the size and protection is as expected
 	if (size != expected_size) {
 		dev_err(tcu->dev, "mmap unexpected size: %zu vs. %zu\n", size,
 		       expected_size);
+		return -EINVAL;
+	}
+	if ((vma->vm_flags & (PROT_READ | PROT_WRITE)) != expected_prot) {
+		dev_err(tcu->dev, "mmap unexpected protection: %#lx vs. %#lx\n",
+			vma->vm_flags & (PROT_READ | PROT_WRITE), expected_prot);
 		return -EINVAL;
 	}
 

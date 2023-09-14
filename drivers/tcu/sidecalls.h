@@ -8,6 +8,7 @@
 typedef enum {
 	Sidecall_ACT_INIT = 0x0,
 	Sidecall_ACT_CTRL = 0x1,
+	Sidecall_MAP = 0x2,
 	Sidecall_TRANSLATE = 0x3,
 	Sidecall_DERIVE_QUOTA = 0x6,
 	Sidecall_GET_QUOTA = 0x7,
@@ -32,6 +33,24 @@ typedef struct {
 	uint64_t act_sel;
 	uint64_t act_op;
 } SideCallActivityCtrl;
+
+typedef struct {
+	uint64_t op;
+	uint64_t act_sel;
+	uint64_t virt;
+	uint64_t global;
+	uint64_t pages;
+	uint64_t perm;
+} SideCallMap;
+
+typedef enum {
+	MapFlag_R = 1,
+	MapFlag_W = 2,
+	MapFlag_X = 4,
+	MapFlag_L = 8,
+	MapFlag_FIXED = 16,
+	MapFlag_U = 32,
+} MapFlags;
 
 typedef struct {
 	uint64_t op;
