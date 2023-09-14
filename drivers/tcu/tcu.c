@@ -136,7 +136,7 @@ static int ioctl_unreg_activity(struct tcu_device *tcu, unsigned long arg)
 	}
 
 	// send exit sidecall
-	e = snd_rcv_sidecall_exit(tcu, act->id, 0);
+	e = send_kernelcall_exit(tcu, act->id, 0);
 	if (e != Error_None) {
 		dev_err(tcu->dev, "exit sidecall for %d failed: %d", act->id, e);
 		return -EINVAL;

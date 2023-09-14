@@ -45,7 +45,7 @@ static void restore_tcu_state(struct tcu_device *tcu, const TCUState *state)
 	write_unpriv_reg(tcu, UnprivReg_COMMAND, state->cmd);
 }
 
-static void sidecall_act_init(struct tcu_device *tcu, const ActInit *req, Response *res)
+static void sidecall_act_init(struct tcu_device *tcu, const SideCallActInit *req, Response *res)
 {
 	int err;
 
@@ -58,7 +58,7 @@ static void sidecall_act_init(struct tcu_device *tcu, const ActInit *req, Respon
 		res->error = Error_NoSpace;
 }
 
-static void sidecall_act_ctrl(struct tcu_device *tcu, const ActivityCtrl *req, Response *res)
+static void sidecall_act_ctrl(struct tcu_device *tcu, const SideCallActivityCtrl *req, Response *res)
 {
 	dev_info(tcu->dev,
 		"sidecalls: ACT_CTRL with act_sel: %llu, act_op=%llu\n",
@@ -80,7 +80,7 @@ static void sidecall_act_ctrl(struct tcu_device *tcu, const ActivityCtrl *req, R
 	}
 }
 
-static void sidecall_get_quota(struct tcu_device *tcu, const GetQuota *req, Response *res)
+static void sidecall_get_quota(struct tcu_device *tcu, const SideCallGetQuota *req, Response *res)
 {
 	dev_info(tcu->dev,
 		"sidecalls: GET_QUOTA with time=%llu, pts=%llu\n",
@@ -90,14 +90,14 @@ static void sidecall_get_quota(struct tcu_device *tcu, const GetQuota *req, Resp
 	res->val2 = ((uint64_t)1 << 32) | 1;
 }
 
-static void sidecall_set_quota(struct tcu_device *tcu, const SetQuota *req, Response *res)
+static void sidecall_set_quota(struct tcu_device *tcu, const SideCallSetQuota *req, Response *res)
 {
 	dev_info(tcu->dev,
 		"sidecalls: SET_QUOTA with id=%llu, time=%llu, pts=%llu\n",
 		req->id, req->time, req->pts);
 }
 
-static void sidecall_derive_quota(struct tcu_device *tcu, const DeriveQuota *req, Response *res)
+static void sidecall_derive_quota(struct tcu_device *tcu, const SideCallDeriveQuota *req, Response *res)
 {
 	dev_info(tcu->dev,
 		"sidecalls: DERIVE_QUOTA with parent_time=%llu, parent_pts=%llu, time=%llu, pts=%llu\n",
@@ -107,7 +107,7 @@ static void sidecall_derive_quota(struct tcu_device *tcu, const DeriveQuota *req
 	res->val2 = 1;
 }
 
-static void sidecall_translate(struct tcu_device *tcu, const Translate *req, Response *res)
+static void sidecall_translate(struct tcu_device *tcu, const SideCallTranslate *req, Response *res)
 {
 	struct m3_activity *act;
 	Phys physaddr;
@@ -148,22 +148,22 @@ static void handle_sidecall(struct tcu_device *tcu, const DefaultRequest *req)
 
 	switch (req->opcode) {
 	case Sidecall_ACT_INIT:
-		sidecall_act_init(tcu, (ActInit*)req, &res);
+		sidecall_act_init(tcu, (SideCallActInit*)req, &res);
 		break;
 	case Sidecall_ACT_CTRL:
-		sidecall_act_ctrl(tcu, (ActivityCtrl*)req, &res);
+		sidecall_act_ctrl(tcu, (SideCallActivityCtrl*)req, &res);
 		break;
 	case Sidecall_SET_QUOTA:
-		sidecall_set_quota(tcu, (SetQuota*)req, &res);
+		sidecall_set_quota(tcu, (SideCallSetQuota*)req, &res);
 		break;
 	case Sidecall_GET_QUOTA:
-		sidecall_get_quota(tcu, (GetQuota*)req, &res);
+		sidecall_get_quota(tcu, (SideCallGetQuota*)req, &res);
 		break;
 	case Sidecall_DERIVE_QUOTA:
-		sidecall_derive_quota(tcu, (DeriveQuota*)req, &res);
+		sidecall_derive_quota(tcu, (SideCallDeriveQuota*)req, &res);
 		break;
 	case Sidecall_TRANSLATE:
-		sidecall_translate(tcu, (Translate*)req, &res);
+		sidecall_translate(tcu, (SideCallTranslate*)req, &res);
 		break;
 	default:
 		dev_info(tcu->dev, "Ignoring side call %llu\n", req->opcode);
@@ -259,15 +259,15 @@ void handle_sidecalls(struct tcu_device *tcu, Reg our_act)
 	restore_tcu_state(tcu, &state);
 }
 
-Error snd_rcv_sidecall_exit(struct tcu_device *tcu, ActId aid, uint64_t code)
+Error send_kernelcall_exit(struct tcu_device *tcu, ActId aid, uint64_t code)
 {
 	Error e;
-	Exit msg = {
+	KernelCallExit msg = {
 		.op = Sidecall_EXIT,
 		.act_sel = (uint64_t)aid,
 		.code = code,
 	};
-	size_t len = sizeof(Exit);
+	size_t len = sizeof(msg);
 
 	// switch to our activity
 	Reg cur_act;

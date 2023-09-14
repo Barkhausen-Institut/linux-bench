@@ -20,59 +20,55 @@ typedef struct {
 	uint64_t time_quota;
 	uint64_t pt_quota;
 	uint64_t eps_start;
-} ActInit;
+} SideCallActInit;
 
 typedef enum {
 	ActivityOp_START = 0,
 	ActivityOp_STOP = 1,
-} ActivityOp;
+} SideCallActivityOp;
 
 typedef struct {
 	uint64_t op;
 	uint64_t act_sel;
 	uint64_t act_op;
-} ActivityCtrl;
+} SideCallActivityCtrl;
 
 typedef struct {
 	uint64_t op;
 	uint64_t act_sel;
 	uint64_t virt;
 	uint64_t perm;
-} Translate;
+} SideCallTranslate;
 
 typedef struct {
 	uint64_t op;
 	uint64_t time;
 	uint64_t pts;
-} GetQuota;
+} SideCallGetQuota;
 
 typedef struct {
 	uint64_t op;
 	uint64_t id;
 	uint64_t time;
 	uint64_t pts;
-} SetQuota;
+} SideCallSetQuota;
 
 typedef struct {
 	uint64_t parent_time;
 	uint64_t parent_pts;
 	uint64_t time;
 	uint64_t pts;
-} DeriveQuota;
+} SideCallDeriveQuota;
 
 typedef enum {
 	Sidecall_EXIT = 0,
-} Calls;
+} KernelCalls;
 
 typedef struct {
 	uint64_t op;
 	uint64_t act_sel;
 	uint64_t code;
-} Exit;
-
-typedef struct {
-	uint64_t op;
-} LxAct;
+} KernelCallExit;
 
 // used for finding out opcode of incoming sidecall
 typedef struct {
@@ -93,7 +89,6 @@ typedef struct {
 
 void init_sidecalls(struct tcu_device *tcu);
 void handle_sidecalls(struct tcu_device *tcu, Reg our_act);
-Error snd_rcv_sidecall_exit(struct tcu_device *tcu, ActId aid, uint64_t code);
-Error snd_rcv_sidecall_lx_act(struct tcu_device *tcu);
+Error send_kernelcall_exit(struct tcu_device *tcu, ActId aid, uint64_t code);
 
 #endif // TCU_SIDECALLS_H
