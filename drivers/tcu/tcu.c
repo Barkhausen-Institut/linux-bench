@@ -34,8 +34,6 @@
 #define IOCTL_UNREG_ACT _IOW('q', 4, unsigned long)
 // noop
 #define IOCTL_NOOP _IO('q', 5)
-// noop with argument
-#define IOCTL_NOOP_ARG _IOW('q', 6, NoopArg *)
 
 typedef struct {
 	uint64_t arg1;
@@ -153,14 +151,6 @@ static int ioctl_noop(struct tcu_device *tcu)
 	return 0;
 }
 
-static int ioctl_noop_arg(struct tcu_device *tcu, unsigned long arg)
-{
-	NoopArg na;
-	if (copy_from_user(&na, (NoopArg *)arg, sizeof(NoopArg)))
-		return -EACCES;
-	return na.arg1 + na.arg2;
-}
-
 static long int tcu_ioctl(struct file *f,
 						  unsigned int cmd, unsigned long arg)
 {
@@ -185,9 +175,6 @@ static long int tcu_ioctl(struct file *f,
 		break;
 	case IOCTL_NOOP:
 		res = ioctl_noop(tcu);
-		break;
-	case IOCTL_NOOP_ARG:
-		res = ioctl_noop_arg(tcu, arg);
 		break;
 	default:
 		dev_err(tcu->dev, "received ioctl call without unknown magic number\n");
