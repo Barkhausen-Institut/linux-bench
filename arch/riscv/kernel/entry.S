@@ -223,6 +223,11 @@ ret_from_syscall_rejected:
 	bnez t0, handle_syscall_trace_exit
 
 ret_from_exception:
+	/* wake up activities, if there are any. Note that we do that here, because we notice whether
+	 * activities need to be waked up during a context switch, but cannot wake it up there, because
+	 * it leads to recursive lock acquisitions within the scheduling module.
+	 */
+	call tcu_activity_wakeup_worker
 	REG_L s0, PT_STATUS(sp)
 	csrc CSR_STATUS, SR_IE
 #ifdef CONFIG_TRACE_IRQFLAGS

@@ -36,6 +36,8 @@ static int tcu_log_level = LOG_INFO | LOG_ACT;
 // invalid activity id
 #define INVAL_AID 0xfffe
 
+#define INVALID_EP 0xffff
+
 #define MMIO_UNPRIV_ADDR 0xf0000000
 #define MMIO_UNPRIV_SIZE (2 * PAGE_SIZE)
 #define MMIO_PRIV_ADDR 0xf0002000
@@ -99,6 +101,8 @@ struct tcu_device {
 	uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
 
 	struct task_struct *waiting_task;
+	struct m3_activity *wake_act;
+	int pending_wakeups;
 
 	struct m3_activity *wait_list;
 	struct m3_activity *run_list;

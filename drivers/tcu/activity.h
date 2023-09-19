@@ -1,6 +1,8 @@
 #ifndef ACTIVITY_H
 #define ACTIVITY_H
 
+#include <linux/wait.h>
+
 #include "tculib.h"
 
 struct m3_activity {
@@ -17,6 +19,9 @@ struct m3_activity {
     unsigned long custom_len;
     phys_addr_t custom_phys;
     unsigned long custom_prot;
+
+    int wakeup;
+    wait_queue_head_t wait_queue;
 
     Reg cur_act;
     Reg tcu_regs[4];

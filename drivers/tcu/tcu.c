@@ -27,6 +27,9 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
+// poll_wait etc.
+#include <linux/poll.h>
+
 // wait for a new activity to start
 #define IOCTL_WAIT_ACT _IOR('q', 1, ActId*)
 // register an activity
@@ -50,7 +53,7 @@ enum {
 	MemType_Custom,
 };
 
-static struct tcu_device *tcu = NULL;
+struct tcu_device *tcu = NULL;
 
 // source: https://github.com/davidhcefx/Translate-Virtual-Address-To-Physical-Address-in-Linux-Kernel
 static unsigned long vaddr2paddr(unsigned long address)
@@ -275,6 +278,24 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 	return 0;
 }
 
+static unsigned int tcu_poll(struct file *filp, struct poll_table_struct *wait)
+{
+	Reg cur_act;
+	__poll_t mask = 0;
+
+	if (tcu->cur_act) {
+		poll_wait(filp, &tcu->cur_act->wait_queue, wait);
+
+		cur_act = read_priv_reg(tcu, PrivReg_CUR_ACT);
+		if (cur_act >> 16)
+			mask |= POLLIN | POLLRDNORM;
+
+		tculog(LOG_POLL, tcu->dev, "poll with activity %d: mask=%x\n", tcu->cur_act_id, mask);
+	}
+
+	return mask;
+}
+
 static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 {
 	struct corereq_foreign_msg core_req;
@@ -311,9 +332,11 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 			if (act == NULL)
 				tculog(LOG_ERR, tcu->dev, "Received message for unknown activity %u\n",
 					core_req.act);
-			else
+			else {
 				act->cur_act += 1 << 16;
-			// TODO switch to the task
+				tculog(LOG_ACTSW, tcu->dev, "Waking up activity %d\n", act->id);
+				wake_up(&act->wait_queue);
+			}
 		}
 
 		set_foreign_resp(tcu);
@@ -356,6 +379,7 @@ static struct file_operations fops = {
 	.owner = THIS_MODULE,
 	.mmap = tcu_dev_mmap,
 	.unlocked_ioctl = tcu_ioctl,
+	.poll = tcu_poll,
 };
 
 static void init_tileid_translation(struct tcu_device *tcu,
@@ -460,6 +484,7 @@ static int tcu_probe(struct platform_device *pdev)
 		goto error;
 	}
 	tcu->dev = dev;
+	tcu->wake_act = NULL;
 	tcu->waiting_task = NULL;
 	tcu->wait_list = NULL;
 	tcu->run_list = NULL;

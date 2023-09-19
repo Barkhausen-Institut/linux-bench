@@ -1,6 +1,7 @@
 #include "activity.h"
 
 #include <linux/slab.h>
+#include <linux/delay.h>
 
 int create_activity(struct tcu_device *tcu, ActId id)
 {
@@ -21,6 +22,9 @@ int create_activity(struct tcu_device *tcu, ActId id)
     act->custom_phys = 0;
     act->custom_len = 0;
     act->custom_prot = 0;
+
+    act->wakeup = 0;
+    init_waitqueue_head(&act->wait_queue);
 
     // allocate environment for application
     act->env = kmalloc(PAGE_SIZE, GFP_ATOMIC);
@@ -155,6 +159,33 @@ void save_activity(struct tcu_device *tcu, struct m3_activity *act)
     act->tcu_regs[3] = read_unpriv_reg(tcu, UnprivReg_DATA_SIZE);
 }
 
+void tcu_activity_wakeup_worker(void)
+{
+    extern struct tcu_device *tcu;
+    struct m3_activity *act;
+    unsigned long flags;
+
+    if (!tcu || !tcu->pending_wakeups)
+        return;
+
+    spin_lock_irqsave(&tcu->lock, flags);
+
+    tculog(LOG_ACTSW, tcu->dev, "Activity worker running\n");
+
+    act = tcu->run_list;
+    while (act) {
+        if (act->wakeup) {
+            tculog(LOG_ACTSW, tcu->dev, "Waking up activity %d (worker)\n", act->id);
+            wake_up(&act->wait_queue);
+            act->wakeup = 0;
+        }
+        act = act->next;
+    }
+    tcu->pending_wakeups = 0;
+
+    spin_unlock_irqrestore(&tcu->lock, flags);
+}
+
 void switch_activity(struct tcu_device *tcu, struct m3_activity *p_act, struct m3_activity *n_act)
 {
     Reg prev_reg, next_reg;
@@ -168,8 +199,17 @@ void switch_activity(struct tcu_device *tcu, struct m3_activity *p_act, struct m
 
     tculog(LOG_ACTSW, tcu->dev, "switch activity: %#llx -> %#llx\n", prev_reg, next_reg);
 
-    if (p_act)
+    if (p_act) {
         p_act->cur_act = prev_reg;
+        // if the previous activity has still messages, wake it up to ensure that we don't wait
+        // forever. for example, if the app just used epoll to wait for the next message, but a
+        // message arrived between the epoll call and now, we didn't receive an interrupt and
+        // therefore need to wakeup the queue here.
+        if (prev_reg >> 16) {
+            p_act->wakeup = 1;
+            tcu->pending_wakeups = 1;
+        }
+    }
 
     if (n_act) {
         restore_activity(tcu, n_act);
