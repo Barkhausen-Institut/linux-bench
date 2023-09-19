@@ -41,7 +41,7 @@ int create_activity(struct tcu_device *tcu, ActId id)
     }
     act->std_app_buf_phys = virt_to_phys(act->std_app_buf);
 
-    dev_info(tcu->dev, "Created activity (%d)\n", id);
+    tculog(LOG_ACT, tcu->dev, "Created activity (%d)\n", id);
 
     // enqueue in wait list
     act->next = tcu->wait_list;
@@ -100,20 +100,20 @@ struct m3_activity *wait_activity(struct tcu_device *tcu)
     }
 
     while (tcu->wait_list == NULL) {
-        dev_info(tcu->dev, "waiting for new activity\n");
+        tculog(LOG_ACT, tcu->dev, "waiting for new activity\n");
         tcu->waiting_task = get_current();
         spin_unlock_irqrestore(&tcu->lock, flags);
         set_current_state(TASK_INTERRUPTIBLE);
         schedule();
         spin_lock_irqsave(&tcu->lock, flags);
-        dev_info(tcu->dev, "woke up from waiting for new activity\n");
+        tculog(LOG_ACT, tcu->dev, "woke up from waiting for new activity\n");
         tcu->waiting_task = NULL;
     }
 
     act = tcu->wait_list;
     id = act->id;
 
-    dev_info(tcu->dev, "got new activity (%d)\n", id);
+    tculog(LOG_ACT, tcu->dev, "got new activity (%d)\n", id);
 
     // move from wait_list to run_list
     tcu->wait_list = act->next;
@@ -130,7 +130,7 @@ void start_activity(struct tcu_device *tcu, struct m3_activity *act, pid_t pid)
     EnvData *env;
 
     act->pid = pid;
-    dev_info(tcu->dev, "Started activity %d (pid %d)\n", act->id, pid);
+    tculog(LOG_ACT, tcu->dev, "Started activity %d (pid %d)\n", act->id, pid);
 
     // set our tile to shared to make apps yield instead of use the TCU sleep
     // TODO improve that
@@ -143,7 +143,7 @@ void save_activity(struct tcu_device *tcu, struct m3_activity *act)
     Reg old_cmd;
     Error err;
 
-    dev_info(tcu->dev, "Saving state of activity %d (pid %d)\n", act->id, act->pid);
+    tculog(LOG_ACTSW, tcu->dev, "Saving state of activity %d (pid %d)\n", act->id, act->pid);
 
     // abort the current command, if there is any
     err = abort_command(tcu, &old_cmd);
@@ -166,7 +166,7 @@ void switch_activity(struct tcu_device *tcu, struct m3_activity *p_act, struct m
     next_reg = n_act ? n_act->cur_act : INVAL_AID;
     prev_reg = xchg_activity(tcu, next_reg);
 
-    dev_info(tcu->dev, "TCU-activity: %#llx\n", next_reg);
+    tculog(LOG_ACTSW, tcu->dev, "switch activity: %#llx -> %#llx\n", prev_reg, next_reg);
 
     if (p_act)
         p_act->cur_act = prev_reg;
@@ -181,7 +181,7 @@ void switch_activity(struct tcu_device *tcu, struct m3_activity *p_act, struct m
 
 void restore_activity(struct tcu_device *tcu, struct m3_activity *act)
 {
-    dev_info(tcu->dev, "Restoring state of activity %d (pid %d)\n", act->id, act->pid);
+    tculog(LOG_ACTSW, tcu->dev, "Restoring state of activity %d (pid %d)\n", act->id, act->pid);
 
     write_unpriv_reg(tcu, UnprivReg_ARG1, act->tcu_regs[1]);
     write_unpriv_reg(tcu, UnprivReg_DATA_ADDR, act->tcu_regs[2]);
@@ -196,7 +196,7 @@ void remove_activity(struct tcu_device *tcu, struct m3_activity *act)
 {
     struct m3_activity *pact;
 
-    dev_info(tcu->dev, "Removing activity %d (pid %d)\n", act->id, act->pid);
+    tculog(LOG_ACT, tcu->dev, "Removing activity %d (pid %d)\n", act->id, act->pid);
 
     // find previous activity
     pact = tcu->run_list;

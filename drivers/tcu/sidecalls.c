@@ -50,7 +50,7 @@ static void sidecall_act_init(struct tcu_device *tcu, const SideCallActInit *req
 {
 	int err;
 
-	dev_info(tcu->dev,
+	tculog(LOG_SCALLS, tcu->dev,
 		"sidecalls: ACT_INIT with act_sel: %llu, time_quota=%llu, pt_quota=%llu, eps_start=%llu\n",
 		req->act_sel, req->time_quota, req->pt_quota, req->eps_start);
 
@@ -61,14 +61,14 @@ static void sidecall_act_init(struct tcu_device *tcu, const SideCallActInit *req
 
 static void sidecall_act_ctrl(struct tcu_device *tcu, const SideCallActivityCtrl *req, Response *res)
 {
-	dev_info(tcu->dev,
+	tculog(LOG_SCALLS, tcu->dev,
 		"sidecalls: ACT_CTRL with act_sel: %llu, act_op=%llu\n",
 		req->act_sel, req->act_op);
 
 	switch(req->act_op) {
 		case ActivityOp_START: {
 		    if (tcu->waiting_task != NULL) {
-		        dev_info(tcu->dev, "sidecalls: waking up starter\n");
+		        tculog(LOG_SCALLS, tcu->dev, "sidecalls: waking up starter\n");
 		    	wake_up_process(tcu->waiting_task);
 		    }
 
@@ -83,7 +83,7 @@ static void sidecall_act_ctrl(struct tcu_device *tcu, const SideCallActivityCtrl
 
 static void sidecall_get_quota(struct tcu_device *tcu, const SideCallGetQuota *req, Response *res)
 {
-	dev_info(tcu->dev,
+	tculog(LOG_SCALLS, tcu->dev,
 		"sidecalls: GET_QUOTA with time=%llu, pts=%llu\n",
 		req->time, req->pts);
 
@@ -93,14 +93,14 @@ static void sidecall_get_quota(struct tcu_device *tcu, const SideCallGetQuota *r
 
 static void sidecall_set_quota(struct tcu_device *tcu, const SideCallSetQuota *req, Response *res)
 {
-	dev_info(tcu->dev,
+	tculog(LOG_SCALLS, tcu->dev,
 		"sidecalls: SET_QUOTA with id=%llu, time=%llu, pts=%llu\n",
 		req->id, req->time, req->pts);
 }
 
 static void sidecall_derive_quota(struct tcu_device *tcu, const SideCallDeriveQuota *req, Response *res)
 {
-	dev_info(tcu->dev,
+	tculog(LOG_SCALLS, tcu->dev,
 		"sidecalls: DERIVE_QUOTA with parent_time=%llu, parent_pts=%llu, time=%llu, pts=%llu\n",
 		req->parent_time, req->parent_pts, req->time, req->pts);
 
@@ -112,7 +112,7 @@ static void sidecall_map(struct tcu_device *tcu, const SideCallMap *req, Respons
 {
 	struct m3_activity *act;
 
-	dev_info(tcu->dev,
+	tculog(LOG_SCALLS, tcu->dev,
 		"sidecalls: MAP with act_sel=%llu, virt=%px, global=%px, pages=%llu, perm=%#llx\n",
 		req->act_sel, (void*)req->virt, (void*)req->global, req->pages, req->perm);
 
@@ -143,7 +143,7 @@ static void sidecall_translate(struct tcu_device *tcu, const SideCallTranslate *
 	struct m3_activity *act;
 	Phys physaddr;
 
-	dev_info(tcu->dev,
+	tculog(LOG_SCALLS, tcu->dev,
 		"sidecalls: TRANSLATE with act_sel=%llu, virt=%px, perm=%#llx\n",
 		req->act_sel, (void*)req->virt, req->perm);
 
@@ -200,14 +200,14 @@ static void handle_sidecall(struct tcu_device *tcu, const DefaultRequest *req)
 		sidecall_translate(tcu, (SideCallTranslate*)req, &res);
 		break;
 	default:
-		dev_info(tcu->dev, "Ignoring side call %llu\n", req->opcode);
+		tculog(LOG_ERR, tcu->dev, "Ignoring side call %llu\n", req->opcode);
 		break;
 	}
 
 	offset = (uintptr_t)req - (uintptr_t)tcu->rcv_buf - SIZE_OF_MSG_HEADER;
 	e = send_response(tcu, res, offset);
 	if (e) {
-		dev_warn(tcu->dev, "wait_for_get_quota: send_response failed: %s\n",
+		tculog(LOG_ERR, tcu->dev, "wait_for_get_quota: send_response failed: %s\n",
 			error_to_str(e));
 	}
 }
@@ -217,7 +217,7 @@ void init_sidecalls(struct tcu_device *tcu)
 	Reg our_act;
 	size_t offset;
 
-	dev_info(tcu->dev, "initializing sidecalls\n");
+	tculog(LOG_SCALLS, tcu->dev, "initializing sidecalls\n");
 
 	while (1) {
 		while (1) {
@@ -225,7 +225,7 @@ void init_sidecalls(struct tcu_device *tcu)
 			if (offset == ~(size_t)0)
 				break;
 
-			dev_info(tcu->dev, "Got message @ %#zx\n", offset);
+			tculog(LOG_SCALLS, tcu->dev, "Got message @ %#zx\n", offset);
 			handle_sidecall(tcu, (DefaultRequest *)(tcu->rcv_buf + offset +
 							   SIZE_OF_MSG_HEADER));
 		}
@@ -249,18 +249,18 @@ void handle_sidecalls(struct tcu_device *tcu, Reg our_act)
 	size_t offset;
 	Error e;
 
-	dev_info(tcu->dev, "Saving TCU state\n");
+	tculog(LOG_SCALLS, tcu->dev, "Saving TCU state\n");
 	save_tcu_state(tcu, &state);
 
 	while (1) {
 		// change to our activity
 		old_act = xchg_activity(tcu, our_act);
 
-		dev_info(tcu->dev, "old_act=%#llx, our_act=%#llx\n", old_act, our_act);
+		tculog(LOG_SCALLS, tcu->dev, "old_act=%#llx, our_act=%#llx\n", old_act, our_act);
 
 		offset = fetch_msg(tcu, TMSIDE_REP);
 		if (offset != ~(size_t)0) {
-			dev_info(tcu->dev, "Got message @ %#zx\n", offset);
+			tculog(LOG_SCALLS, tcu->dev, "Got message @ %#zx\n", offset);
 			handle_sidecall(tcu, (DefaultRequest *)(tcu->rcv_buf + offset +
 							   SIZE_OF_MSG_HEADER));
 		}
@@ -268,7 +268,7 @@ void handle_sidecalls(struct tcu_device *tcu, Reg our_act)
 		// check if the kernel answered a request from us
 		offset = fetch_msg(tcu, KPEX_REP);
 		while (offset != ~(size_t)0) {
-			dev_info(tcu->dev, "Acking message @ %#zx\n", offset);
+			tculog(LOG_SCALLS, tcu->dev, "Acking message @ %#zx\n", offset);
 			e = ack_msg(tcu, KPEX_REP, offset);
 			BUG_ON(e != Error_None);
 			offset = fetch_msg(tcu, KPEX_REP);
@@ -277,11 +277,11 @@ void handle_sidecalls(struct tcu_device *tcu, Reg our_act)
 		// change back to old activity (or the just started one)
 		if(tcu->cur_act_id != INVAL_AID) {
 			our_act = xchg_activity(tcu, tcu->cur_act_id);
-			dev_info(tcu->dev, "Switched from %#llx to %#x\n", our_act, tcu->cur_act_id);
+			tculog(LOG_SCALLS, tcu->dev, "Switched from %#llx to %#x\n", our_act, tcu->cur_act_id);
 		}
 		else {
 			our_act = xchg_activity(tcu, old_act);
-			dev_info(tcu->dev, "Switched from %#llx to %#llx\n", our_act, old_act);
+			tculog(LOG_SCALLS, tcu->dev, "Switched from %#llx to %#llx\n", our_act, old_act);
 		}
 
 		// if no events arrived in the meantime, we're done
@@ -289,7 +289,7 @@ void handle_sidecalls(struct tcu_device *tcu, Reg our_act)
 			break;
 	}
 
-	dev_info(tcu->dev, "Restoring TCU state\n");
+	tculog(LOG_SCALLS, tcu->dev, "Restoring TCU state\n");
 	restore_tcu_state(tcu, &state);
 }
 
@@ -311,7 +311,7 @@ Error send_kernelcall_exit(struct tcu_device *tcu, ActId aid, uint64_t code)
 	memcpy(tcu->snd_buf, &msg, len);
 	e = send_aligned(tcu, KPEX_SEP, tcu->snd_buf, len, 0, KPEX_REP);
 	if (e != Error_None)
-		dev_err(tcu->dev, "exit sidecall failed: %s\n", error_to_str(e));
+		tculog(LOG_ERR, tcu->dev, "exit sidecall failed: %s\n", error_to_str(e));
 
 	// switch to idle
 	cur_act = xchg_activity(tcu, INVAL_AID);

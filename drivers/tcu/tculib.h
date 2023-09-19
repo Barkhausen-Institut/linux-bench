@@ -11,6 +11,24 @@
 #include <linux/printk.h>
 #include <linux/sched.h>
 
+enum {
+	LOG_INFO = 1,
+	LOG_ERR = 2,
+	LOG_ACT = 4,
+	LOG_ACTSW = 8,
+	LOG_MEM = 16,
+	LOG_POLL = 32,
+	LOG_IRQ = 64,
+	LOG_SCALLS = 128,
+};
+
+static int tcu_log_level = LOG_INFO | LOG_ACT;
+
+#define tculog(lvl, dev, fmt, ...)	do {			 \
+	if (tcu_log_level & (lvl)) 						 \
+		_dev_info(dev, dev_fmt(fmt), ##__VA_ARGS__); \
+} while(0)
+
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
 // privileged activity id

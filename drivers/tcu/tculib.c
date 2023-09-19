@@ -27,7 +27,7 @@ Error insert_tlb(struct tcu_device *tcu, uint16_t asid, uint64_t virt,
 	write_priv_reg(tcu, PrivReg_PRIV_CMD, cmd);
 	e = get_priv_error(tcu);
 	if (e) {
-		dev_err(tcu->dev, "failed to insert tlb entry, got error %s\n",
+		tculog(LOG_ERR, tcu->dev, "failed to insert tlb entry, got error %s\n",
 		       error_to_str(e));
 	}
 	return e;
@@ -135,7 +135,7 @@ size_t fetch_msg(struct tcu_device *tcu, EpId ep)
 			 build_cmd(ep, CmdOpCode_FETCH_MSG, 0));
 	e = get_unpriv_error(tcu);
 	if (e != Error_None) {
-		dev_err(tcu->dev, "fetch_msg: got error %s\n", error_to_str(e));
+		tculog(LOG_ERR, tcu->dev, "fetch_msg: got error %s\n", error_to_str(e));
 		return ~(size_t)0;
 	}
 	return read_unpriv_reg(tcu, UnprivReg_ARG1);
@@ -163,7 +163,7 @@ void ack_irq(struct tcu_device *tcu, int irq)
 
 void print_ep_info(struct tcu_device *tcu, EpId ep, EpInfo i)
 {
-	dev_info(tcu->dev, "PMP EP %llu (offset: %#llx, size: %#llx, perm: %#x)\n", ep,
+	tculog(LOG_INFO, tcu->dev, "PMP EP %llu (offset: %#llx, size: %#llx, perm: %#x)\n", ep,
 		i.addr, i.size, i.perm);
 }
 

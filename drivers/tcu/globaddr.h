@@ -27,7 +27,7 @@ static inline GlobAddr phys_to_glob(struct tcu_device *tcu, Phys addr)
 	print_ep_info(tcu, ep, info);
 	res = ((TILE_OFFSET + (GlobAddr)info.tid) << TILE_SHIFT) |
 	      (offset + info.addr);
-	dev_info(tcu->dev, "Translated %#llx to %#llx\n", addr, res);
+	tculog(LOG_MEM, tcu->dev, "Translated %#llx to %#llx\n", addr, res);
 	return res;
 }
 
@@ -39,7 +39,7 @@ static inline Phys glob_to_phys(struct tcu_device *tcu, GlobAddr glob)
 	uint64_t offset;
 
 	if (glob < ((GlobAddr)TILE_OFFSET << TILE_SHIFT)) {
-		dev_info(tcu->dev, "Translated %#llx to %#llx\n", glob, glob);
+		tculog(LOG_MEM, tcu->dev, "Translated %#llx to %#llx\n", glob, glob);
 		return glob;
 	}
 
@@ -57,12 +57,12 @@ static inline Phys glob_to_phys(struct tcu_device *tcu, GlobAddr glob)
 		if (info.tid == tile && offset >= info.addr && offset < info.addr + info.size) {
 			// TODO validate access permissions?
 			Phys phys = ep << 30 | (MEM_OFFSET + (offset - info.addr));
-			dev_info(tcu->dev, "Translated %#llx to %#llx\n", glob, phys);
+			tculog(LOG_MEM, tcu->dev, "Translated %#llx to %#llx\n", glob, phys);
 			return phys;
 		}
     }
 
-	dev_info(tcu->dev, "Translation of %#llx failed\n", glob);
+	tculog(LOG_MEM, tcu->dev, "Translation of %#llx failed\n", glob);
 	return 0;
 }
 

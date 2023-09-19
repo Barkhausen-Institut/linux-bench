@@ -113,7 +113,7 @@ static int ioctl_insert_tlb(struct tcu_device *tcu, unsigned long arg)
 	uint8_t perm;
 
 	if (tcu->cur_act_id == INVAL_AID) {
-		dev_err(tcu->dev, "there is no activity registered\n");
+		tculog(LOG_ERR, tcu->dev, "there is no activity registered\n");
 		return -EINVAL;
 	}
 
@@ -121,7 +121,7 @@ static int ioctl_insert_tlb(struct tcu_device *tcu, unsigned long arg)
 	perm = (uint8_t)(arg & 0xf);
 	phys = vaddr2paddr(virt);
 	if (phys == 0) {
-		dev_err(tcu->dev, "TLB insert: virtual address is not mapped\n");
+		tculog(LOG_ERR, tcu->dev, "TLB insert: virtual address is not mapped\n");
 		return -EINVAL;
 	}
 
@@ -135,14 +135,14 @@ static int ioctl_unreg_activity(struct tcu_device *tcu, unsigned long arg)
 
 	act = id_to_activity(tcu, (ActId)arg);
 	if (act == NULL || act->pid == 0) {
-		dev_err(tcu->dev, "activity %d not found\n", (ActId)arg);
+		tculog(LOG_ERR, tcu->dev, "activity %d not found\n", (ActId)arg);
 		return -EINVAL;
 	}
 
 	// send exit sidecall
 	e = send_kernelcall_exit(tcu, act->id, 0);
 	if (e != Error_None) {
-		dev_err(tcu->dev, "exit sidecall for %d failed: %d", act->id, e);
+		tculog(LOG_ERR, tcu->dev, "exit sidecall for %d failed: %d", act->id, e);
 		return -EINVAL;
 	}
 
@@ -181,7 +181,7 @@ static long int tcu_ioctl(struct file *f,
 		res = ioctl_noop(tcu);
 		break;
 	default:
-		dev_err(tcu->dev, "received ioctl call without unknown magic number\n");
+		tculog(LOG_ERR, tcu->dev, "received ioctl call without unknown magic number\n");
 		break;
 	}
 
@@ -236,7 +236,7 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 		act->custom_len = 0;
 		break;
 	default:
-		dev_err(tcu->dev, "mmap invalid type: %d\n", ty);
+		tculog(LOG_ERR, tcu->dev, "mmap invalid type: %d\n", ty);
     	spin_unlock_irqrestore(&tcu->lock, flags);
 		return -EINVAL;
 	}
@@ -245,17 +245,17 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 
 	// check if the size and protection is as expected
 	if (size != expected_size) {
-		dev_err(tcu->dev, "mmap unexpected size: %zu vs. %zu\n", size,
+		tculog(LOG_ERR, tcu->dev, "mmap unexpected size: %zu vs. %zu\n", size,
 		       expected_size);
 		return -EINVAL;
 	}
 	if ((vma->vm_flags & (PROT_READ | PROT_WRITE)) != expected_prot) {
-		dev_err(tcu->dev, "mmap unexpected protection: %#lx vs. %#lx\n",
+		tculog(LOG_ERR, tcu->dev, "mmap unexpected protection: %#lx vs. %#lx\n",
 			vma->vm_flags & (PROT_READ | PROT_WRITE), expected_prot);
 		return -EINVAL;
 	}
 
-	dev_info(tcu->dev, "mmap %#lx to %#lx (%zu pages)\n",
+	tculog(LOG_MEM, tcu->dev, "mmap %#lx to %#lx (%zu pages)\n",
 		vma->vm_start, pfn << PAGE_SHIFT, expected_size / PAGE_SIZE);
 
 	if (io) {
@@ -268,7 +268,7 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 	}
 
 	if (res) {
-		dev_err(tcu->dev, "mmap - remap_pfn_range failed\n");
+		tculog(LOG_ERR, tcu->dev, "mmap - remap_pfn_range failed\n");
 		return -EAGAIN;
 	}
 
@@ -283,10 +283,10 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 
 	spin_lock(&tcu->lock);
 
-	dev_info(tcu->dev, "Got TCU irq %d\n", irq);
+	tculog(LOG_IRQ, tcu->dev, "Got TCU irq %d\n", irq);
 
 	if(get_core_req(tcu, &core_req)) {
-		dev_info(tcu->dev, "Got foreign message core request (act=%u, ep=%llu)\n",
+		tculog(LOG_IRQ, tcu->dev, "Got foreign message core request (act=%u, ep=%llu)\n",
 			core_req.act, core_req.ep);
 
 		// if it's for us, handle side calls
@@ -309,7 +309,8 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 		else {
 			act = id_to_activity(tcu, core_req.act);
 			if (act == NULL)
-				dev_warn(tcu->dev, "Received message for unknown activity %u\n", core_req.act);
+				tculog(LOG_ERR, tcu->dev, "Received message for unknown activity %u\n",
+					core_req.act);
 			else
 				act->cur_act += 1 << 16;
 			// TODO switch to the task
@@ -318,7 +319,7 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 		set_foreign_resp(tcu);
 	}
 	else
-		dev_warn(tcu->dev, "Unknown cause for TCU irq\n");
+		tculog(LOG_ERR, tcu->dev, "Unknown cause for TCU irq\n");
 
 	ack_irq(tcu, irq);
 
@@ -342,12 +343,8 @@ void tcu_task_switch(bool preempt, struct task_struct *prev, struct task_struct 
 	BUG_ON(p_act != NULL && p_act->pid != prev->pid);
 	n_act = pid_to_activity(tcu, next->pid);
 
-	if (p_act != NULL || n_act != NULL) {
-	    dev_info(tcu->dev, "switching from %d:%s to %d:%s (%d)\n",
-	        prev->pid, prev->comm, next->pid, next->comm, preempt);
-
+	if (p_act != NULL || n_act != NULL)
 	    switch_activity(tcu, p_act, n_act);
-	}
 
     spin_unlock_irqrestore(&tcu->lock, flags);
 }
@@ -397,7 +394,7 @@ static dev_t create_tcu_dev(struct tcu_device *tcu, struct platform_device *pdev
 
 	retval = alloc_chrdev_region(&dev_no, TCU_MINOR, DEV_COUNT, "tcu");
 	if (retval < 0) {
-		dev_err(dev, "failed to allocate major number for TCU device\n");
+		tculog(LOG_ERR, dev, "failed to allocate major number for TCU device\n");
 		goto error;
 	}
 
@@ -405,30 +402,30 @@ static dev_t create_tcu_dev(struct tcu_device *tcu, struct platform_device *pdev
 	cdev_init(&tcu->cdev, &fops);
 	retval = cdev_add(&tcu->cdev, dev_no, DEV_COUNT);
 	if (retval < 0) {
-		dev_err(dev, "failed to add TCU device\n");
+		tculog(LOG_ERR, dev, "failed to add TCU device\n");
 		goto error_add;
 	}
 
 	tcu->dev_class = class_create(THIS_MODULE, "tcu");
 	if (IS_ERR(tcu->dev_class)) {
-		dev_err(dev, "failed to create device class for TCU device\n");
+		tculog(LOG_ERR, dev, "failed to create device class for TCU device\n");
 		goto error_add;
 	}
 
 	tcu->char_dev = device_create(tcu->dev_class, NULL, MKDEV(tcu->major, TCU_MINOR),
 				   NULL, "tcu");
 	if (IS_ERR(tcu->char_dev)) {
-		dev_err(dev, "failed to create TCU device\n");
+		tculog(LOG_ERR, dev, "failed to create TCU device\n");
 		goto error_create;
 	}
 
 	tcu->irq = platform_get_irq(pdev, 0);
 	if (tcu->irq < 0) {
-		dev_err(dev, "failed to get TCU IRQ\n");
+		tculog(LOG_ERR, dev, "failed to get TCU IRQ\n");
 		goto error_irq;
 	}
 
-	dev_info(tcu->dev, "using IRQ %d\n", tcu->irq);
+	tculog(LOG_INFO, tcu->dev, "using IRQ %d\n", tcu->irq);
 
 	return dev_no;
 
@@ -459,7 +456,7 @@ static int tcu_probe(struct platform_device *pdev)
 
 	tcu = kmalloc(sizeof(struct tcu_device), GFP_KERNEL);
 	if (!tcu) {
-		dev_err(dev, "kmalloc for tcu_device failed\n");
+		tculog(LOG_ERR, dev, "kmalloc for tcu_device failed\n");
 		goto error;
 	}
 	tcu->dev = dev;
@@ -473,12 +470,12 @@ static int tcu_probe(struct platform_device *pdev)
 	// map the environment to know the platform we're running on (some macros depend on it)
 	m3_env = (EnvData *)memremap(ENV_START, PAGE_SIZE, MEMREMAP_WB);
 	if (!m3_env) {
-		dev_err(dev, "memremap for environment failed\n");
+		tculog(LOG_ERR, dev, "memremap for environment failed\n");
 		goto error_env;
 	}
 
 	tcu->platform = m3_env->platform;
-	dev_info(tcu->dev, "initializing TCU driver on platform %d\n", (int)tcu->platform);
+	tculog(LOG_INFO, tcu->dev, "initializing TCU driver on platform %d\n", (int)tcu->platform);
 
 	init_tileid_translation(tcu, m3_env->raw_tile_ids, m3_env->raw_tile_count);
 	memunmap(m3_env);
@@ -490,7 +487,7 @@ static int tcu_probe(struct platform_device *pdev)
 	// map MMIO region; both unprivileged and privileged interface
 	tcu->unpriv_base = (uint64_t *)ioremap(MMIO_ADDR, MMIO_SIZE);
 	if (!tcu->unpriv_base) {
-		dev_err(dev, "ioremap for the TCU's MMIO region failed\n");
+		tculog(LOG_ERR, dev, "ioremap for the TCU's MMIO region failed\n");
 		goto error_mmio;
 	}
 	tcu->priv_base = tcu->unpriv_base + (MMIO_UNPRIV_SIZE / sizeof(uint64_t));
@@ -498,21 +495,21 @@ static int tcu_probe(struct platform_device *pdev)
 	// map receive buffer for side calls
 	tcu->rcv_buf = (uint8_t *)memremap(TMUP_RBUF_ADDR, TMUP_RBUF_SIZE, MEMREMAP_WB);
 	if (!tcu->rcv_buf) {
-		dev_err(dev, "memremap for side call receive buffer failed\n");
+		tculog(LOG_ERR, dev, "memremap for side call receive buffer failed\n");
 		goto error_sidebuf;
 	}
 
 	// map receive buffer for replies from the M³ kernel
 	tcu->rpl_buf = (uint8_t *)memremap(TILEMUX_RBUF_SPACE, KPEX_RBUF_SIZE, MEMREMAP_WB);
 	if (!tcu->rpl_buf) {
-		dev_err(dev, "memremap for TileMux receive buffer failed\n");
+		tculog(LOG_ERR, dev, "memremap for TileMux receive buffer failed\n");
 		goto error_tmbuf;
 	}
 
 	// map send buffer for our messages to the M³ kernel
 	tcu->snd_buf = (uint8_t *)kmalloc(MAX_MSG_SIZE, GFP_KERNEL);
 	if (!tcu->snd_buf) {
-		dev_err(dev, "kmalloc for send buffer failed");
+		tculog(LOG_ERR, dev, "kmalloc for send buffer failed");
 		goto error_sndbuf;
 	}
 	// messages need to be 16 byte aligned
@@ -524,11 +521,11 @@ static int tcu_probe(struct platform_device *pdev)
 
 	retval = request_irq(tcu->irq, tcu_irq_handler, IRQF_SHARED, dev_name(dev), dev);
 	if (retval) {
-		dev_err(dev, "failed to request TCU IRQ\n");
+		tculog(LOG_ERR, dev, "failed to request TCU IRQ\n");
 		goto error_irq;
 	}
 
-	dev_info(tcu->dev, "initialization done\n");
+	tculog(LOG_INFO, tcu->dev, "initialization done\n");
 
 	return 0;
 
