@@ -28,11 +28,11 @@
 #include <linux/delay.h>
 
 // wait for a new activity to start
-#define IOCTL_WAIT_FOR_ACT _IOR('q', 1, ActId*)
+#define IOCTL_WAIT_ACT _IOR('q', 1, ActId*)
 // register an activity
 #define IOCTL_REG_ACT _IOW('q', 2, unsigned long)
 // inserts an entry in tcu tlb, uses current activity id
-#define IOCTL_TLB_INSRT _IOW('q', 3, unsigned long)
+#define IOCTL_TLB_INSERT _IOW('q', 3, unsigned long)
 // forgets about an activity
 #define IOCTL_UNREG_ACT _IOW('q', 4, unsigned long)
 // noop
@@ -79,7 +79,7 @@ static unsigned long vaddr2paddr(unsigned long address)
 	return phys;
 }
 
-static int ioctl_wait_for_activity(struct tcu_device *tcu, unsigned long arg)
+static int ioctl_wait_act(struct tcu_device *tcu, unsigned long arg)
 {
 	struct m3_activity *act = wait_activity(tcu);
 	if (!act)
@@ -91,7 +91,7 @@ static int ioctl_wait_for_activity(struct tcu_device *tcu, unsigned long arg)
 	return 0;
 }
 
-static int ioctl_reg_activity(struct tcu_device *tcu, unsigned long arg)
+static int ioctl_reg_act(struct tcu_device *tcu, unsigned long arg)
 {
 	struct m3_activity *act;
 
@@ -106,7 +106,7 @@ static int ioctl_reg_activity(struct tcu_device *tcu, unsigned long arg)
 	return 0;
 }
 
-static int ioctl_insert_tlb(struct tcu_device *tcu, unsigned long arg)
+static int ioctl_tlb_insert(struct tcu_device *tcu, unsigned long arg)
 {
 	uint64_t phys;
 	uint64_t virt;
@@ -128,7 +128,7 @@ static int ioctl_insert_tlb(struct tcu_device *tcu, unsigned long arg)
 	return (int)insert_tlb(tcu, tcu->cur_act_id, virt, phys, perm);
 }
 
-static int ioctl_unreg_activity(struct tcu_device *tcu, unsigned long arg)
+static int ioctl_unreg_act(struct tcu_device *tcu, unsigned long arg)
 {
 	struct m3_activity *act;
 	Error e;
@@ -161,21 +161,21 @@ static long int tcu_ioctl(struct file *f,
 	unsigned long flags;
 	long int res = -EINVAL;
 
-	if (cmd != IOCTL_WAIT_FOR_ACT)
+	if (cmd != IOCTL_WAIT_ACT)
     	spin_lock_irqsave(&tcu->lock, flags);
 
 	switch (cmd) {
-	case IOCTL_WAIT_FOR_ACT:
-		res = ioctl_wait_for_activity(tcu, arg);
+	case IOCTL_WAIT_ACT:
+		res = ioctl_wait_act(tcu, arg);
 		break;
 	case IOCTL_REG_ACT:
-		res = ioctl_reg_activity(tcu, arg);
+		res = ioctl_reg_act(tcu, arg);
 		break;
-	case IOCTL_TLB_INSRT:
-		res = ioctl_insert_tlb(tcu, arg);
+	case IOCTL_TLB_INSERT:
+		res = ioctl_tlb_insert(tcu, arg);
 		break;
 	case IOCTL_UNREG_ACT:
-		res = ioctl_unreg_activity(tcu, arg);
+		res = ioctl_unreg_act(tcu, arg);
 		break;
 	case IOCTL_NOOP:
 		res = ioctl_noop(tcu);
@@ -185,7 +185,7 @@ static long int tcu_ioctl(struct file *f,
 		break;
 	}
 
-	if (cmd != IOCTL_WAIT_FOR_ACT)
+	if (cmd != IOCTL_WAIT_ACT)
 		spin_unlock_irqrestore(&tcu->lock, flags);
 
 	return res;
