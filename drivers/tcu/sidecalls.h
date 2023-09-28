@@ -6,14 +6,25 @@
 #include "tculib.h"
 
 typedef enum {
-	Sidecall_ACT_INIT = 0x0,
-	Sidecall_ACT_CTRL = 0x1,
-	Sidecall_MAP = 0x2,
-	Sidecall_TRANSLATE = 0x3,
-	Sidecall_DERIVE_QUOTA = 0x6,
-	Sidecall_GET_QUOTA = 0x7,
-	Sidecall_SET_QUOTA = 0x8,
+	Sidecall_INFO = 0x0,
+	Sidecall_ACT_INIT = 0x1,
+	Sidecall_ACT_CTRL = 0x2,
+	Sidecall_MAP = 0x3,
+	Sidecall_TRANSLATE = 0x4,
+	Sidecall_DERIVE_QUOTA = 0x7,
+	Sidecall_GET_QUOTA = 0x8,
+	Sidecall_SET_QUOTA = 0x9,
 } Sidecalls;
+
+typedef enum {
+	TYPE_NONE = 0,
+	TYPE_TILEMUX = 1,
+	TYPE_LINUX = 2,
+} TileMuxInfoType;
+
+typedef struct {
+	uint64_t op;
+} SideCallInfo;
 
 typedef struct {
 	uint64_t op;

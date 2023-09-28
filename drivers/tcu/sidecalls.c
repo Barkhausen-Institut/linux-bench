@@ -46,6 +46,13 @@ static void restore_tcu_state(struct tcu_device *tcu, const TCUState *state)
 	write_unpriv_reg(tcu, UnprivReg_COMMAND, state->cmd);
 }
 
+static void sidecall_info(struct tcu_device *tcu, const SideCallInfo *, Response *res)
+{
+	tculog(LOG_SCALLS, tcu->dev, "sidecalls: INFO\n");
+
+	res->val1 = TYPE_LINUX;
+}
+
 static void sidecall_act_init(struct tcu_device *tcu, const SideCallActInit *req, Response *res)
 {
 	int err;
@@ -178,6 +185,9 @@ static void handle_sidecall(struct tcu_device *tcu, const DefaultRequest *req)
 	};
 
 	switch (req->opcode) {
+	case Sidecall_INFO:
+		sidecall_info(tcu, (SideCallInfo*)req, &res);
+		break;
 	case Sidecall_ACT_INIT:
 		sidecall_act_init(tcu, (SideCallActInit*)req, &res);
 		break;
@@ -274,7 +284,7 @@ void handle_sidecalls(struct tcu_device *tcu, Reg our_act)
 			offset = fetch_msg(tcu, KPEX_REP);
 		}
 
-		// change back to old activity (or the just started one)
+		// change back to old activity
 		if(tcu->cur_act_id != INVAL_AID) {
 			our_act = xchg_activity(tcu, tcu->cur_act_id);
 			tculog(LOG_SCALLS, tcu->dev, "Switched from %#llx to %#x\n", our_act, tcu->cur_act_id);
