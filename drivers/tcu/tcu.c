@@ -135,15 +135,17 @@ static int ioctl_unreg_act(struct tcu_device *tcu, unsigned long arg)
 {
 	struct m3_activity *act;
 	Error e;
+	ActId id = arg & 0xFFFF;
+	int status = arg >> 16;
 
-	act = id_to_activity(tcu, (ActId)arg);
+	act = id_to_activity(tcu, id);
 	if (act == NULL || act->pid == 0) {
-		tculog(LOG_ERR, tcu->dev, "activity %d not found\n", (ActId)arg);
+		tculog(LOG_ERR, tcu->dev, "activity %d not found\n", id);
 		return -EINVAL;
 	}
 
 	// send exit sidecall
-	e = send_kernelcall_exit(tcu, act->id, 0);
+	e = send_kernelcall_exit(tcu, act->id, status);
 	if (e != Error_None) {
 		tculog(LOG_ERR, tcu->dev, "exit sidecall for %d failed: %d", act->id, e);
 		return -EINVAL;
