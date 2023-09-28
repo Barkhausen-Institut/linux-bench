@@ -275,7 +275,7 @@ size_t fetch_msg(struct tcu_device *tcu, EpId ep);
 Error ack_msg(struct tcu_device *tcu, EpId ep, size_t msg_off);
 void ack_irq(struct tcu_device *tcu, int irq);
 
-void print_ep_info(struct tcu_device *tcu, EpId ep, EpInfo i);
+void print_ep_info(struct tcu_device *tcu, int flag, EpId ep, EpInfo i);
 EpInfo unpack_mem_ep(struct tcu_device *tcu, EpId ep);
 
 void tcu_print(struct tcu_device *tcu, const char *str);

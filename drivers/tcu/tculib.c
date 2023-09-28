@@ -161,9 +161,9 @@ void ack_irq(struct tcu_device *tcu, int irq)
 	}
 }
 
-void print_ep_info(struct tcu_device *tcu, EpId ep, EpInfo i)
+void print_ep_info(struct tcu_device *tcu, int flag, EpId ep, EpInfo i)
 {
-	tculog(LOG_INFO, tcu->dev, "PMP EP %llu (offset: %#llx, size: %#llx, perm: %#x)\n", ep,
+	tculog(flag, tcu->dev, "PMP EP %llu (offset: %#llx, size: %#llx, perm: %#x)\n", ep,
 		i.addr, i.size, i.perm);
 }
 

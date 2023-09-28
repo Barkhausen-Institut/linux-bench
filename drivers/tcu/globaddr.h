@@ -24,7 +24,7 @@ static inline GlobAddr phys_to_glob(struct tcu_device *tcu, Phys addr)
 	offset = addr & 0x3fffffff;
 	info = unpack_mem_ep(tcu, ep);
 	BUG_ON(info.size == 0); // must be a memory EP
-	print_ep_info(tcu, ep, info);
+	print_ep_info(tcu, LOG_MEM, ep, info);
 	res = ((TILE_OFFSET + (GlobAddr)info.tid) << TILE_SHIFT) |
 	      (offset + info.addr);
 	tculog(LOG_MEM, tcu->dev, "Translated %#llx to %#llx\n", addr, res);
