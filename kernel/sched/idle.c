@@ -253,6 +253,8 @@ exit_idle:
 		local_irq_enable();
 }
 
+extern void tcu_activity_wakeup_worker(void);
+
 /*
  * Generic idle loop implementation
  *
@@ -272,6 +274,8 @@ static void do_idle(void)
 
 	__current_set_polling();
 	tick_nohz_idle_enter();
+
+	tcu_activity_wakeup_worker();
 
 	while (!need_resched()) {
 		rmb();
@@ -299,6 +303,8 @@ static void do_idle(void)
 			cpuidle_idle_call();
 		}
 		arch_cpu_idle_exit();
+
+		tcu_activity_wakeup_worker();
 	}
 
 	/*
