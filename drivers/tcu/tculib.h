@@ -272,6 +272,7 @@ static inline Reg build_cmd(EpId ep, CmdOpCode cmd, Reg arg)
 }
 
 Error insert_tlb(struct tcu_device *tcu, uint16_t asid, uint64_t virt, uint64_t phys, uint8_t perm);
+Error invalidate_tlb(struct tcu_device *tcu);
 Error abort_command(struct tcu_device *tcu, Reg *cmd);
 Reg xchg_activity(struct tcu_device *tcu, Reg new_act);
 bool get_core_req(struct tcu_device *tcu, struct corereq_foreign_msg *core_req);

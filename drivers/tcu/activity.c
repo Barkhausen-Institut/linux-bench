@@ -274,6 +274,8 @@ void remove_activity(struct tcu_device *tcu, struct m3_activity *act)
     else
         remove_from_list(&tcu->wait_list, act);
 
+    invalidate_tlb(tcu);
+
     kfree(act->env);
     kfree(act->std_app_buf);
     kfree(act);

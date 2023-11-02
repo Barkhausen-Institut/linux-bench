@@ -31,6 +31,15 @@ Error insert_tlb(struct tcu_device *tcu, uint16_t asid, uint64_t virt,
 	if (e)
 		tculog(LOG_ERR, tcu->dev, "failed to insert tlb entry, got error %s\n", error_to_str(e));
 	return e;
+}
+
+Error invalidate_tlb(struct tcu_device *tcu)
+{
+	Error e;
+	write_priv_reg(tcu, PrivReg_PRIV_CMD, PrivCmdOpCode_INV_TLB);
+	e = get_priv_error(tcu);
+	if (e)
+		tculog(LOG_ERR, tcu->dev, "failed to invalidate TLB, got error %s\n", error_to_str(e));
 	return e;
 }
 
