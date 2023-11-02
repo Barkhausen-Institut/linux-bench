@@ -6,14 +6,14 @@ Error insert_tlb(struct tcu_device *tcu, uint16_t asid, uint64_t virt,
 	Reg cmd;
 	Error e;
 	uint32_t tcu_flags = 0;
-	if (perm & 1)
+	if (perm & PAGE_R)
 		tcu_flags |= 1;
-	if (perm & 2)
+	if (perm & PAGE_W)
 		tcu_flags |= 2;
-	if (perm & 16)
+	if (perm & PAGE_FIXED)
 		tcu_flags |= 4;
 
-	if (perm & 8)
+	if (perm & PAGE_L) {
 		phys = phys |
 		       ((virt & (LPAGE_SIZE - 1)) & ~(uint64_t)PAGE_MASK);
 

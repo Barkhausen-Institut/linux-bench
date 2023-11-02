@@ -78,6 +78,15 @@ typedef uint32_t Perm;
 
 struct m3_activity;
 
+enum PageFlags {
+	PAGE_R = 1,
+	PAGE_W = 2,
+	PAGE_X = 4,
+	PAGE_L = 8,
+	PAGE_FIXED = 16,
+	PAGE_U = 32,
+};
+
 struct tcu_device {
 	struct device *dev;
 	unsigned int major;
