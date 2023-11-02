@@ -511,6 +511,7 @@ static int tcu_probe(struct platform_device *pdev)
 		goto error_env;
 	}
 
+	tcu->tile_id = m3_env->tile_id;
 	tcu->platform = m3_env->platform;
 	tculog(LOG_INFO, tcu->dev, "initializing TCU driver on platform %d\n", (int)tcu->platform);
 

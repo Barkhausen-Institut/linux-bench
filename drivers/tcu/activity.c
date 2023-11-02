@@ -140,6 +140,8 @@ void start_activity(struct tcu_device *tcu, struct m3_activity *act, pid_t pid)
     // TODO improve that
     env = (EnvData*)act->env;
     env->shared = 1;
+    env->tile_id = tcu->tile_id;
+    env->platform = tcu->platform;
 }
 
 void save_activity(struct tcu_device *tcu, struct m3_activity *act)

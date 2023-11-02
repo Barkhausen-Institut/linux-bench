@@ -106,6 +106,7 @@ struct tcu_device {
 	// for receiving replies from m3 kernel
 	uint8_t *rpl_buf;
 
+	uint64_t tile_id;
 	uint64_t platform;
 	uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
 
