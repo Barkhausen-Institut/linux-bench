@@ -68,22 +68,29 @@ static void sidecall_act_init(struct tcu_device *tcu, const SideCallActInit *req
 
 static void sidecall_act_ctrl(struct tcu_device *tcu, const SideCallActivityCtrl *req, Response *res)
 {
+	struct m3_activity *act;
+
 	tculog(LOG_SCALLS, tcu->dev,
 		"sidecalls: ACT_CTRL with act_sel: %llu, act_op=%llu\n",
 		req->act_sel, req->act_op);
 
+	act = id_to_activity(tcu, (ActId)req->act_sel);
+	if(act == NULL)
+		return;
+
 	switch(req->act_op) {
 		case ActivityOp_START: {
+		    // mark the activity as "ready to pick up"
+		    act->state = A_READY;
+
 		    if (tcu->waiting_task != NULL) {
 		        tculog(LOG_SCALLS, tcu->dev, "sidecalls: waking up starter\n");
 		    	wake_up_process(tcu->waiting_task);
 		    }
-
-		    // TODO mark the activity as "ready to pick up"
 			break;
 		}
 		case ActivityOp_STOP:
-			// TODO handle ACT_STOP operation
+			remove_activity(tcu, act);
 			break;
 	}
 }

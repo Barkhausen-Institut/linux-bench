@@ -5,9 +5,16 @@
 
 #include "tculib.h"
 
+enum ActivityState {
+    A_STOPPED,
+    A_READY,
+    A_RUNNING,
+};
+
 struct m3_activity {
     ActId id;
     pid_t pid;
+    int state;
     struct m3_activity *next;
 
     void *env;

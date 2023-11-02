@@ -15,6 +15,7 @@ int create_activity(struct tcu_device *tcu, ActId id)
 
     act->id = id;
     act->pid = 0;
+    act->state = A_STOPPED;
     act->cur_act = id;
     for(i = 0; i < sizeof(act->tcu_regs) / sizeof(act->tcu_regs[0]); ++i)
         act->tcu_regs[i] = 0;
@@ -93,7 +94,7 @@ struct m3_activity *pid_to_activity(struct tcu_device *tcu, pid_t pid)
 struct m3_activity *wait_activity(struct tcu_device *tcu)
 {
     unsigned long flags;
-    struct m3_activity *act;
+    struct m3_activity *act, *prev;
     ActId id;
 
     spin_lock_irqsave(&tcu->lock, flags);
@@ -103,6 +104,7 @@ struct m3_activity *wait_activity(struct tcu_device *tcu)
         return NULL;
     }
 
+retry:
     while (tcu->wait_list == NULL) {
         tculog(LOG_ACT, tcu->dev, "waiting for new activity\n");
         tcu->waiting_task = get_current();
@@ -114,15 +116,25 @@ struct m3_activity *wait_activity(struct tcu_device *tcu)
         tcu->waiting_task = NULL;
     }
 
+    prev = NULL;
     act = tcu->wait_list;
-    id = act->id;
+    while(act && act->state != A_READY) {
+        prev = act;
+        act = act->next;
+    }
+    if(!act)
+        goto retry;
 
     tculog(LOG_ACT, tcu->dev, "got new activity (%d)\n", id);
 
     // move from wait_list to run_list
-    tcu->wait_list = act->next;
+    if(prev)
+        prev->next = act->next;
+    else
+        tcu->wait_list = act->next;
     act->next = tcu->run_list;
     tcu->run_list = act;
+    act->state = A_RUNNING;
 
     spin_unlock_irqrestore(&tcu->lock, flags);
 
@@ -234,14 +246,12 @@ void restore_activity(struct tcu_device *tcu, struct m3_activity *act)
     write_unpriv_reg(tcu, UnprivReg_COMMAND, act->tcu_regs[0]);
 }
 
-void remove_activity(struct tcu_device *tcu, struct m3_activity *act)
+static void remove_from_list(struct m3_activity **list, struct m3_activity *act)
 {
     struct m3_activity *pact;
 
-    tculog(LOG_ACT, tcu->dev, "Removing activity %d (pid %d)\n", act->id, act->pid);
-
     // find previous activity
-    pact = tcu->run_list;
+    pact = *list;
     while (pact) {
         if (pact->next == act)
             break;
@@ -252,7 +262,18 @@ void remove_activity(struct tcu_device *tcu, struct m3_activity *act)
     if (pact)
         pact->next = act->next;
     else
-        tcu->run_list = act->next;
+        *list = act->next;
+}
+
+void remove_activity(struct tcu_device *tcu, struct m3_activity *act)
+{
+    tculog(LOG_ACT, tcu->dev, "Removing activity %d (pid %d)\n", act->id, act->pid);
+
+    if(act->state == A_RUNNING)
+        remove_from_list(&tcu->run_list, act);
+    else
+        remove_from_list(&tcu->wait_list, act);
+
     kfree(act->env);
     kfree(act->std_app_buf);
     kfree(act);
