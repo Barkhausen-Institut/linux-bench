@@ -6,6 +6,7 @@
 
 // PROT_READ etc.
 #include <asm/mman.h>
+#include <asm/pgtable.h>
 
 // module_init, module_exit
 #include <linux/module.h>
@@ -56,10 +57,11 @@ enum {
 struct tcu_device *tcu = NULL;
 
 // source: https://github.com/davidhcefx/Translate-Virtual-Address-To-Physical-Address-in-Linux-Kernel
-static unsigned long vaddr2paddr(unsigned long address)
+static unsigned long vaddr2paddr(unsigned long address, uint8_t *perm)
 {
 	uint64_t phys = 0;
 	pgd_t *pgd = pgd_offset(current->mm, address);
+	*perm = 0;
 	if (!pgd_none(*pgd) && !pgd_bad(*pgd)) {
 		p4d_t *p4d = p4d_offset(pgd, address);
 		if (!p4d_none(*p4d) && !p4d_bad(*p4d)) {
@@ -72,6 +74,9 @@ static unsigned long vaddr2paddr(unsigned long address)
 					if (!pte_none(*pte)) {
 						struct page *pg =
 							pte_page(*pte);
+						*perm |= PAGE_R;
+						if(pte_write(*pte))
+							*perm |= PAGE_W;
 						phys = page_to_phys(pg);
 					}
 					pte_unmap(pte);
@@ -113,7 +118,7 @@ static int ioctl_tlb_insert(struct tcu_device *tcu, unsigned long arg)
 {
 	uint64_t phys;
 	uint64_t virt;
-	uint8_t perm;
+	uint8_t want_perm, have_perm;
 
 	if (tcu->cur_act_id == INVAL_AID) {
 		tculog(LOG_ERR, tcu->dev, "there is no activity registered\n");
@@ -121,14 +126,19 @@ static int ioctl_tlb_insert(struct tcu_device *tcu, unsigned long arg)
 	}
 
 	virt = arg & PAGE_MASK;
-	perm = (uint8_t)(arg & 0xf);
-	phys = vaddr2paddr(virt);
+	want_perm = (uint8_t)(arg & 0xf);
+	phys = vaddr2paddr(virt, &have_perm);
 	if (phys == 0) {
-		tculog(LOG_ERR, tcu->dev, "TLB insert: virtual address is not mapped\n");
+		tculog(LOG_ERR, tcu->dev, "TLB insert: virtual address %#llx is not mapped\n", virt);
 		return -EINVAL;
 	}
+	if (~have_perm & want_perm) {
+		tculog(LOG_ERR, tcu->dev, "TLB insert: requested permissions %#x, but have %#x\n",
+			want_perm, have_perm);
+		return -EPERM;
+	}
 
-	return (int)insert_tlb(tcu, tcu->cur_act_id, virt, phys, perm);
+	return (int)insert_tlb(tcu, tcu->cur_act_id, virt, phys, have_perm);
 }
 
 static int ioctl_unreg_act(struct tcu_device *tcu, unsigned long arg)
