@@ -22,7 +22,7 @@ enum {
 	LOG_SCALLS = 128,
 };
 
-static int tcu_log_level = LOG_INFO | LOG_ACT;
+static int tcu_log_level = LOG_INFO | LOG_ERR | LOG_ACT;
 
 #define tculog(lvl, dev, fmt, ...)	do {			 \
 	if (tcu_log_level & (lvl)) 						 \
