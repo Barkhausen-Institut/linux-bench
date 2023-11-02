@@ -16,9 +16,11 @@ Error insert_tlb(struct tcu_device *tcu, uint16_t asid, uint64_t virt,
 	if (perm & PAGE_L) {
 		phys = phys |
 		       ((virt & (LPAGE_SIZE - 1)) & ~(uint64_t)PAGE_MASK);
+	}
 
-	// pr_info("tlb insert: asid: %#hx, virt: %#llx, phys: %#llx, perm: %#x\n",
-	//  asid, virt, phys, perm);
+	tculog(LOG_MEM, tcu->dev, "TLB insert: asid=%#hx, virt=%#llx, phys=%#llx, perm=%#x\n",
+			asid, virt, phys, perm);
+
 	BUG_ON(phys >> 32 != 0);
 	write_priv_reg(tcu, PrivReg_PRIV_CMD_ARG, virt & PAGE_MASK);
 	mb();
@@ -26,10 +28,9 @@ Error insert_tlb(struct tcu_device *tcu, uint16_t asid, uint64_t virt,
 	      PrivCmdOpCode_INS_TLB;
 	write_priv_reg(tcu, PrivReg_PRIV_CMD, cmd);
 	e = get_priv_error(tcu);
-	if (e) {
-		tculog(LOG_ERR, tcu->dev, "failed to insert tlb entry, got error %s\n",
-		       error_to_str(e));
-	}
+	if (e)
+		tculog(LOG_ERR, tcu->dev, "failed to insert tlb entry, got error %s\n", error_to_str(e));
+	return e;
 	return e;
 }
 
