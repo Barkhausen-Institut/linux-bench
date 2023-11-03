@@ -55,7 +55,7 @@ static int tcu_log_level = LOG_INFO | LOG_ERR | LOG_ACT;
 /// The receive EP for sidecalls from the kernel for TileMux
 #define TMSIDE_REP (PMEM_PROT_EPS + 2)
 
-#define TOTAL_EPS(tcu) (is_gem5(tcu) ? 192 : 128)
+#define TOTAL_EPS(tcu) (tcu_is_gem5(tcu) ? 192 : 128)
 /// The number of external registers
 #define EXT_REGS 3
 /// The number of unprivileged registers
@@ -120,74 +120,6 @@ struct tcu_device {
 	ActId cur_act_id;
 };
 
-typedef enum PrivReg {
-	/// For core requests
-	PrivReg_CORE_REQ = 0x0,
-	/// Controls the privileged interface
-	PrivReg_PRIV_CTRL = 0x1,
-	/// For privileged commands
-	PrivReg_PRIV_CMD = 0x2,
-	/// The argument for privileged commands
-	PrivReg_PRIV_CMD_ARG = 0x3,
-	/// The current activity
-	PrivReg_CUR_ACT = 0x4,
-	/// Used to ack IRQ requests
-	PrivReg_CLEAR_IRQ = 0x5,
-} PrivReg;
-
-typedef enum {
-	/// The idle command has no effect
-	PrivCmdOpCode_IDLE = 0,
-	/// Invalidate a single TLB entry
-	PrivCmdOpCode_INV_PAGE = 1,
-	/// Invalidate all TLB entries
-	PrivCmdOpCode_INV_TLB = 2,
-	/// Insert an entry into the TLB
-	PrivCmdOpCode_INS_TLB = 3,
-	/// Changes the activity
-	PrivCmdOpCode_XCHG_ACT = 4,
-	/// Sets the timer
-	PrivCmdOpCode_SET_TIMER = 5,
-	/// Abort the current command
-	PrivCmdOpCode_ABORT_CMD = 6,
-	/// Flushes and invalidates the cache
-	PrivCmdOpCode_FLUSH_CACHE = 7,
-} PrivCmdOpCode;
-
-typedef enum {
-	/// The idle command has no effect
-	CmdOpCode_IDLE = 0x0,
-	/// Sends a message
-	CmdOpCode_SEND = 0x1,
-	/// Replies to a message
-	CmdOpCode_REPLY = 0x2,
-	/// Reads from external memory
-	CmdOpCode_READ = 0x3,
-	/// Writes to external memory
-	CmdOpCode_WRITE = 0x4,
-	/// Fetches a message
-	CmdOpCode_FETCH_MSG = 0x5,
-	/// Acknowledges a message
-	CmdOpCode_ACK_MSG = 0x6,
-	/// Puts the CU to sleep
-	CmdOpCode_SLEEP = 0x7,
-} CmdOpCode;
-
-typedef enum {
-	/// Starts commands and signals their completion
-	UnprivReg_COMMAND = 0x0,
-	/// Specifies the data address
-	UnprivReg_DATA_ADDR = 0x1,
-	/// Specifies the data size
-	UnprivReg_DATA_SIZE = 0x2,
-	/// Specifies an additional argument
-	UnprivReg_ARG1 = 0x3,
-	/// The current time in nanoseconds
-	UnprivReg_CUR_TIME = 0x4,
-	/// Prints a line into the gem5 log
-	UnprivReg_PRINT = 0x5,
-} UnprivReg;
-
 typedef struct {
 	TileId tid;
 	uint64_t addr;
@@ -195,99 +127,43 @@ typedef struct {
 	Perm perm;
 } EpInfo;
 
-struct corereq_foreign_msg {
+typedef struct {
+	Reg cmd;
+	Reg arg1;
+	Reg addr;
+	Reg size;
+} TCUState;
+
+struct cureq_foreign_msg {
 	ActId act;
 	EpId ep;
 };
 
-static inline bool is_gem5(struct tcu_device *tcu)
+static inline bool tcu_is_gem5(struct tcu_device *tcu)
 {
 	return tcu->platform == 0;
 }
 
-static inline TileId nocid_to_tileid(struct tcu_device *tcu, uint16_t tile)
-{
-	size_t i;
-	for (i = 0; i < MAX_CHIPS * MAX_TILES; ++i) {
-		if (tcu->tile_ids[i] == tile) {
-			uint8_t chip = i / MAX_TILES;
-			uint8_t tile = i % MAX_TILES;
-			return (chip << 8) | tile;
-		}
-	}
-	BUG_ON(true);
-}
-
-static inline void write_unpriv_reg(struct tcu_device *tcu, unsigned int index, Reg val)
-{
-	iowrite64(val, tcu->unpriv_base + EXT_REGS + index);
-}
-
-static inline Reg read_unpriv_reg(struct tcu_device *tcu, unsigned int index)
-{
-	return ioread64(tcu->unpriv_base + EXT_REGS + index);
-}
-
-static inline Reg read_ep_reg(struct tcu_device *tcu, EpId ep, size_t reg)
-{
-	return ioread64(tcu->unpriv_base + EXT_REGS + UNPRIV_REGS + EP_REGS * ep +
-			reg);
-}
-
-static inline void write_priv_reg(struct tcu_device *tcu, unsigned int index, Reg val)
-{
-	iowrite64(val, tcu->priv_base + index);
-}
-
-static inline Reg read_priv_reg(struct tcu_device *tcu, unsigned int index)
-{
-	return ioread64(tcu->priv_base + index);
-}
-
-static inline Error get_unpriv_error(struct tcu_device *tcu)
-{
-	Reg cmd;
-	while (true) {
-		cmd = read_unpriv_reg(tcu, UnprivReg_COMMAND);
-		if ((cmd & 0xf) == CmdOpCode_IDLE) {
-			return (Error)((cmd >> 20) & 0x1f);
-		}
-	}
-}
-
-static inline Error get_priv_error(struct tcu_device *tcu)
-{
-	Reg cmd;
-	while (true) {
-		cmd = read_priv_reg(tcu, PrivReg_PRIV_CMD);
-		if ((cmd & 0xf) == PrivCmdOpCode_IDLE) {
-			return (Error)((cmd >> 4) & 0xf);
-		}
-	}
-}
-
-static inline Reg build_cmd(EpId ep, CmdOpCode cmd, Reg arg)
-{
-	return (arg << 25) | ((Reg)ep << 4) | cmd;
-}
-
-Error insert_tlb(struct tcu_device *tcu, uint16_t asid, uint64_t virt, uint64_t phys, uint8_t perm);
-Error invalidate_tlb(struct tcu_device *tcu);
-Error abort_command(struct tcu_device *tcu, Reg *cmd);
-Reg xchg_activity(struct tcu_device *tcu, Reg new_act);
-bool get_core_req(struct tcu_device *tcu, struct corereq_foreign_msg *core_req);
-void set_foreign_resp(struct tcu_device *tcu);
-Error perform_send_reply(struct tcu_device *tcu, uint64_t msg_addr, Reg cmd);
-Error send_aligned(struct tcu_device *tcu, EpId ep, uint8_t *msg, size_t len, Label reply_lbl,
-		   EpId reply_ep);
-Error reply_aligned(struct tcu_device *tcu, EpId ep, uint8_t *reply, size_t len, size_t msg_off);
+Error tcu_tlb_insert(struct tcu_device *tcu, uint16_t asid, uint64_t virt, uint64_t phys, uint8_t perm);
+Error tcu_tlb_invalidate(struct tcu_device *tcu);
+Error tcu_abort_cmd(struct tcu_device *tcu, Reg *cmd);
+Reg tcu_xchg_activity(struct tcu_device *tcu, Reg new_act);
+bool tcu_get_cu_req(struct tcu_device *tcu, struct cureq_foreign_msg *core_req);
+void tcu_set_cu_resp(struct tcu_device *tcu);
+Error tcu_send_aligned(struct tcu_device *tcu, EpId ep, uint8_t *msg, size_t len, Label reply_lbl,
+ 					   EpId reply_ep);
+Error tcu_reply_aligned(struct tcu_device *tcu, EpId ep, uint8_t *reply, size_t len, size_t msg_off);
 // returns ~(size_t)0 if there is no message or there was an error
-size_t fetch_msg(struct tcu_device *tcu, EpId ep);
-Error ack_msg(struct tcu_device *tcu, EpId ep, size_t msg_off);
-void ack_irq(struct tcu_device *tcu, int irq);
+size_t tcu_fetch_msg(struct tcu_device *tcu, EpId ep);
+bool tcu_has_msgs(struct tcu_device *tcu);
+Error tcu_ack_msg(struct tcu_device *tcu, EpId ep, size_t msg_off);
+void tcu_ack_irq(struct tcu_device *tcu, int irq);
 
-void print_ep_info(struct tcu_device *tcu, int flag, EpId ep, EpInfo i);
-EpInfo unpack_mem_ep(struct tcu_device *tcu, EpId ep);
+void tcu_print_ep_info(struct tcu_device *tcu, int flag, EpId ep, EpInfo i);
+EpInfo tcu_unpack_mem_ep(struct tcu_device *tcu, EpId ep);
+
+void tcu_save_state(struct tcu_device *tcu, TCUState *state);
+void tcu_restore_state(struct tcu_device *tcu, const TCUState *state);
 
 void tcu_print(struct tcu_device *tcu, const char *str);
 void tcu_printf(struct tcu_device *tcu, const char *fmt, ...);

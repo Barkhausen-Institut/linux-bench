@@ -3,9 +3,8 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
-int create_activity(struct tcu_device *tcu, ActId id)
+int activity_create(struct tcu_device *tcu, ActId id)
 {
-    size_t i;
     struct m3_activity *act = kmalloc(sizeof(struct m3_activity), GFP_ATOMIC);
 
     if (!act) {
@@ -17,8 +16,7 @@ int create_activity(struct tcu_device *tcu, ActId id)
     act->pid = 0;
     act->state = A_STOPPED;
     act->cur_act = id;
-    for(i = 0; i < sizeof(act->tcu_regs) / sizeof(act->tcu_regs[0]); ++i)
-        act->tcu_regs[i] = 0;
+    memset(&act->tcu_state, 0, sizeof(act->tcu_state));
 
     act->custom_phys = 0;
     act->custom_len = 0;
@@ -54,7 +52,7 @@ int create_activity(struct tcu_device *tcu, ActId id)
     return 0;
 }
 
-struct m3_activity *id_to_activity(struct tcu_device *tcu, ActId id)
+struct m3_activity *activity_from_id(struct tcu_device *tcu, ActId id)
 {
     struct m3_activity *act;
 
@@ -75,7 +73,7 @@ struct m3_activity *id_to_activity(struct tcu_device *tcu, ActId id)
     return NULL;
 }
 
-struct m3_activity *pid_to_activity(struct tcu_device *tcu, pid_t pid)
+struct m3_activity *activity_from_pid(struct tcu_device *tcu, pid_t pid)
 {
     struct m3_activity *act;
 
@@ -91,7 +89,7 @@ struct m3_activity *pid_to_activity(struct tcu_device *tcu, pid_t pid)
     return NULL;
 }
 
-struct m3_activity *wait_activity(struct tcu_device *tcu)
+struct m3_activity *activity_wait(struct tcu_device *tcu)
 {
     unsigned long flags;
     struct m3_activity *act, *prev;
@@ -141,7 +139,7 @@ retry:
     return act;
 }
 
-void start_activity(struct tcu_device *tcu, struct m3_activity *act, pid_t pid)
+void activity_start(struct tcu_device *tcu, struct m3_activity *act, pid_t pid)
 {
     EnvData *env;
 
@@ -154,23 +152,6 @@ void start_activity(struct tcu_device *tcu, struct m3_activity *act, pid_t pid)
     env->shared = 1;
     env->tile_id = tcu->tile_id;
     env->platform = tcu->platform;
-}
-
-void save_activity(struct tcu_device *tcu, struct m3_activity *act)
-{
-    Reg old_cmd;
-    Error err;
-
-    tculog(LOG_ACTSW, tcu->dev, "Saving state of activity %d (pid %d)\n", act->id, act->pid);
-
-    // abort the current command, if there is any
-    err = abort_command(tcu, &old_cmd);
-    BUG_ON(err != Error_None);
-
-    act->tcu_regs[0] = old_cmd;
-    act->tcu_regs[1] = read_unpriv_reg(tcu, UnprivReg_ARG1);
-    act->tcu_regs[2] = read_unpriv_reg(tcu, UnprivReg_DATA_ADDR);
-    act->tcu_regs[3] = read_unpriv_reg(tcu, UnprivReg_DATA_SIZE);
 }
 
 void tcu_activity_wakeup_worker(void)
@@ -200,16 +181,30 @@ void tcu_activity_wakeup_worker(void)
     spin_unlock_irqrestore(&tcu->lock, flags);
 }
 
-void switch_activity(struct tcu_device *tcu, struct m3_activity *p_act, struct m3_activity *n_act)
+static void activity_save(struct tcu_device *tcu, struct m3_activity *act)
+{
+    tculog(LOG_ACTSW, tcu->dev, "Saving state of activity %d (pid %d)\n", act->id, act->pid);
+
+    tcu_save_state(tcu, &act->tcu_state);
+}
+
+static void activity_restore(struct tcu_device *tcu, struct m3_activity *act)
+{
+    tculog(LOG_ACTSW, tcu->dev, "Restoring state of activity %d (pid %d)\n", act->id, act->pid);
+
+    tcu_restore_state(tcu, &act->tcu_state);
+}
+
+void activity_switch(struct tcu_device *tcu, struct m3_activity *p_act, struct m3_activity *n_act)
 {
     Reg prev_reg, next_reg;
 
     if (p_act) {
-        save_activity(tcu, p_act);
+        activity_save(tcu, p_act);
     }
 
     next_reg = n_act ? n_act->cur_act : INVAL_AID;
-    prev_reg = xchg_activity(tcu, next_reg);
+    prev_reg = tcu_xchg_activity(tcu, next_reg);
 
     tculog(LOG_ACTSW, tcu->dev, "switch activity: %#llx -> %#llx\n", prev_reg, next_reg);
 
@@ -226,27 +221,14 @@ void switch_activity(struct tcu_device *tcu, struct m3_activity *p_act, struct m
     }
 
     if (n_act) {
-        restore_activity(tcu, n_act);
+        activity_restore(tcu, n_act);
     }
 
     tcu->cur_act = n_act;
     tcu->cur_act_id = next_reg & 0xFFFF;
 }
 
-void restore_activity(struct tcu_device *tcu, struct m3_activity *act)
-{
-    tculog(LOG_ACTSW, tcu->dev, "Restoring state of activity %d (pid %d)\n", act->id, act->pid);
-
-    write_unpriv_reg(tcu, UnprivReg_ARG1, act->tcu_regs[1]);
-    write_unpriv_reg(tcu, UnprivReg_DATA_ADDR, act->tcu_regs[2]);
-    write_unpriv_reg(tcu, UnprivReg_DATA_SIZE, act->tcu_regs[3]);
-    // always restore the command register, because the previous activity might have an error code
-    // in the command register or similar.
-    mb();
-    write_unpriv_reg(tcu, UnprivReg_COMMAND, act->tcu_regs[0]);
-}
-
-static void remove_from_list(struct m3_activity **list, struct m3_activity *act)
+static void activity_remove_from_list(struct m3_activity **list, struct m3_activity *act)
 {
     struct m3_activity *pact;
 
@@ -265,16 +247,16 @@ static void remove_from_list(struct m3_activity **list, struct m3_activity *act)
         *list = act->next;
 }
 
-void remove_activity(struct tcu_device *tcu, struct m3_activity *act)
+void activity_remove(struct tcu_device *tcu, struct m3_activity *act)
 {
     tculog(LOG_ACT, tcu->dev, "Removing activity %d (pid %d)\n", act->id, act->pid);
 
     if(act->state == A_RUNNING)
-        remove_from_list(&tcu->run_list, act);
+        activity_remove_from_list(&tcu->run_list, act);
     else
-        remove_from_list(&tcu->wait_list, act);
+        activity_remove_from_list(&tcu->wait_list, act);
 
-    invalidate_tlb(tcu);
+    tcu_tlb_invalidate(tcu);
 
     kfree(act->env);
     kfree(act->std_app_buf);

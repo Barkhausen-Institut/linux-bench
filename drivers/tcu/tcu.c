@@ -89,7 +89,7 @@ static unsigned long vaddr2paddr(unsigned long address, uint8_t *perm)
 
 static int ioctl_wait_act(struct tcu_device *tcu, unsigned long arg)
 {
-	struct m3_activity *act = wait_activity(tcu);
+	struct m3_activity *act = activity_wait(tcu);
 	if (!act)
 		return -EBUSY;
 
@@ -103,13 +103,13 @@ static int ioctl_reg_act(struct tcu_device *tcu, unsigned long arg)
 {
 	struct m3_activity *act;
 
-	act = id_to_activity(tcu, (ActId)arg);
+	act = activity_from_id(tcu, (ActId)arg);
 	if (act == NULL || act->pid != 0)
 		return -EINVAL;
 
-	start_activity(tcu, act, get_current()->pid);
+	activity_start(tcu, act, get_current()->pid);
 	BUG_ON(tcu->cur_act == act);
-    switch_activity(tcu, tcu->cur_act, act);
+    activity_switch(tcu, tcu->cur_act, act);
 
 	return 0;
 }
@@ -138,7 +138,7 @@ static int ioctl_tlb_insert(struct tcu_device *tcu, unsigned long arg)
 		return -EPERM;
 	}
 
-	return (int)insert_tlb(tcu, tcu->cur_act_id, virt, phys, have_perm);
+	return (int)tcu_tlb_insert(tcu, tcu->cur_act_id, virt, phys, have_perm);
 }
 
 static int ioctl_unreg_act(struct tcu_device *tcu, unsigned long arg)
@@ -148,20 +148,20 @@ static int ioctl_unreg_act(struct tcu_device *tcu, unsigned long arg)
 	ActId id = arg & 0xFFFF;
 	int status = arg >> 16;
 
-	act = id_to_activity(tcu, id);
+	act = activity_from_id(tcu, id);
 	if (act == NULL || act->pid == 0) {
 		tculog(LOG_ERR, tcu->dev, "activity %d not found\n", id);
 		return -EINVAL;
 	}
 
 	// send exit sidecall
-	e = send_kernelcall_exit(tcu, act->id, status);
+	e = sidecalls_send_exit(tcu, act->id, status);
 	if (e != Error_None) {
 		tculog(LOG_ERR, tcu->dev, "exit sidecall for %d failed: %d", act->id, e);
 		return -EINVAL;
 	}
 
-	remove_activity(tcu, act);
+	activity_remove(tcu, act);
 	return 0;
 }
 
@@ -217,7 +217,7 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 
     spin_lock_irqsave(&tcu->lock, flags);
 
-	act = pid_to_activity(tcu, get_current()->pid);
+	act = activity_from_pid(tcu, get_current()->pid);
 	if (act == NULL) {
     	spin_unlock_irqrestore(&tcu->lock, flags);
 		return -EINVAL;
@@ -292,14 +292,12 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 
 static unsigned int tcu_poll(struct file *filp, struct poll_table_struct *wait)
 {
-	Reg cur_act;
 	__poll_t mask = 0;
 
 	if (tcu->cur_act) {
 		poll_wait(filp, &tcu->cur_act->wait_queue, wait);
 
-		cur_act = read_priv_reg(tcu, PrivReg_CUR_ACT);
-		if (cur_act >> 16)
+		if (tcu_has_msgs(tcu))
 			mask |= POLLIN | POLLRDNORM;
 
 		tculog(LOG_POLL, tcu->dev, "poll with activity %d: mask=%x\n", tcu->cur_act_id, mask);
@@ -310,7 +308,7 @@ static unsigned int tcu_poll(struct file *filp, struct poll_table_struct *wait)
 
 static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 {
-	struct corereq_foreign_msg core_req;
+	struct cureq_foreign_msg core_req;
 	struct m3_activity *act;
 	Reg old_act;
 
@@ -318,7 +316,7 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 
 	tculog(LOG_IRQ, tcu->dev, "Got TCU irq %d\n", irq);
 
-	if(get_core_req(tcu, &core_req)) {
+	if(tcu_get_cu_req(tcu, &core_req)) {
 		tculog(LOG_IRQ, tcu->dev, "Got foreign message core request (act=%u, ep=%llu)\n",
 			core_req.act, core_req.ep);
 
@@ -328,19 +326,19 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 			// also know that we always handle all messages before we switch back to another
 			// activity. therefore, we can just set one message here.
 			// TODO maybe we want to execute that in process ctx rather than in interrupt ctx?
-			handle_sidecalls(tcu, PRIV_AID | (1 << 16));
+			sidecalls_handle(tcu, PRIV_AID | (1 << 16));
 		}
 		// if it's for the current app, increase message counter
 		else if(core_req.act == tcu->cur_act_id) {
 			// switch to idle to get the current message count
-			old_act = xchg_activity(tcu, INVAL_AID);
+			old_act = tcu_xchg_activity(tcu, INVAL_AID);
 			// add message
 			old_act += 1 << 16;
 			// we know that idle never receives messages, therefore there is nothing else to do
-			xchg_activity(tcu, old_act);
+			tcu_xchg_activity(tcu, old_act);
 		}
 		else {
-			act = id_to_activity(tcu, core_req.act);
+			act = activity_from_id(tcu, core_req.act);
 			if (act == NULL)
 				tculog(LOG_ERR, tcu->dev, "Received message for unknown activity %u\n",
 					core_req.act);
@@ -351,12 +349,12 @@ static irqreturn_t __maybe_unused tcu_irq_handler(int irq, void *ndev)
 			}
 		}
 
-		set_foreign_resp(tcu);
+		tcu_set_cu_resp(tcu);
 	}
 	else
 		tculog(LOG_ERR, tcu->dev, "Unknown cause for TCU irq\n");
 
-	ack_irq(tcu, irq);
+	tcu_ack_irq(tcu, irq);
 
     spin_unlock(&tcu->lock);
 
@@ -376,10 +374,10 @@ void tcu_task_switch(bool preempt, struct task_struct *prev, struct task_struct 
 
 	p_act = tcu->cur_act;
 	BUG_ON(p_act != NULL && p_act->pid != prev->pid);
-	n_act = pid_to_activity(tcu, next->pid);
+	n_act = activity_from_pid(tcu, next->pid);
 
 	if (p_act != NULL || n_act != NULL)
-	    switch_activity(tcu, p_act, n_act);
+	    activity_switch(tcu, p_act, n_act);
 
     spin_unlock_irqrestore(&tcu->lock, flags);
 }
@@ -555,7 +553,7 @@ static int tcu_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, tcu);
 
-	init_sidecalls(tcu);
+	sidecalls_init(tcu);
 
 	retval = request_irq(tcu->irq, tcu_irq_handler, IRQF_SHARED, dev_name(dev), dev);
 	if (retval) {

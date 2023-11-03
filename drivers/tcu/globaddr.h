@@ -22,9 +22,9 @@ static inline GlobAddr phys_to_glob(struct tcu_device *tcu, Phys addr)
 	addr -= MEM_OFFSET;
 	ep = (addr >> 30) & 0x3;
 	offset = addr & 0x3fffffff;
-	info = unpack_mem_ep(tcu, ep);
+	info = tcu_unpack_mem_ep(tcu, ep);
 	BUG_ON(info.size == 0); // must be a memory EP
-	print_ep_info(tcu, LOG_MEM, ep, info);
+	tcu_print_ep_info(tcu, LOG_MEM, ep, info);
 	res = ((TILE_OFFSET + (GlobAddr)info.tid) << TILE_SHIFT) |
 	      (offset + info.addr);
 	tculog(LOG_MEM, tcu->dev, "Translated %#llx to %#llx\n", addr, res);
@@ -48,7 +48,7 @@ static inline Phys glob_to_phys(struct tcu_device *tcu, GlobAddr glob)
 
     // find memory EP that contains the address
 	for(ep = 0; ep < PMEM_PROT_EPS; ++ep) {
-		info = unpack_mem_ep(tcu, ep);
+		info = tcu_unpack_mem_ep(tcu, ep);
 
 		// ignore non-memory EPs
 		if (info.size == 0)

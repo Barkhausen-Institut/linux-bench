@@ -71,7 +71,6 @@ typedef enum Error {
 	Error_InvChecksum,
 	Error_SocketClosed,
 	Error_ConnectionFailed,
-
 } Error;
 
 char *error_to_str(Error e);
