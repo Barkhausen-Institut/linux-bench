@@ -93,7 +93,6 @@ struct m3_activity *activity_wait(struct tcu_device *tcu)
 {
     unsigned long flags;
     struct m3_activity *act, *prev;
-    ActId id;
 
     spin_lock_irqsave(&tcu->lock, flags);
 
@@ -123,7 +122,7 @@ retry:
     if(!act)
         goto retry;
 
-    tculog(LOG_ACT, tcu->dev, "got new activity (%d)\n", id);
+    tculog(LOG_ACT, tcu->dev, "got new activity (%d)\n", act->id);
 
     // move from wait_list to run_list
     if(prev)
