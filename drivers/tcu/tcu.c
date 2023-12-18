@@ -49,6 +49,7 @@ typedef struct {
 
 enum {
 	MemType_TCU,
+    MemType_TCUEps,
 	MemType_Environment,
 	MemType_StdRecvBuf,
 	MemType_Custom,
@@ -228,6 +229,12 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 		pfn = MMIO_UNPRIV_ADDR >> PAGE_SHIFT;
 		expected_size = MMIO_UNPRIV_SIZE;
 		expected_prot = PROT_READ | PROT_WRITE;
+		io = 1;
+		break;
+	case MemType_TCUEps:
+		pfn = MMIO_EPS_ADDR >> PAGE_SHIFT;
+		expected_size = MMIO_EPS_SIZE;
+		expected_prot = PROT_READ;
 		io = 1;
 		break;
 	case MemType_Environment:

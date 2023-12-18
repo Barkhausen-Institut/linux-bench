@@ -83,8 +83,8 @@ static inline TileId tcu_nocid_to_tileid(struct tcu_device *tcu, uint16_t tile)
 
 static inline Reg tcu_read_ep_reg(struct tcu_device *tcu, EpId ep, size_t reg)
 {
-	return ioread64(tcu->unpriv_base + EXT_REGS + UNPRIV_REGS + EP_REGS * ep +
-			reg);
+	return ioread64((tcu->unpriv_base + (MMIO_EPS_ADDR - MMIO_UNPRIV_ADDR) / sizeof(Reg))
+            + EP_REGS * ep + reg);
 }
 
 static inline void tcu_write_unpriv_reg(struct tcu_device *tcu, unsigned int index, Reg val)
@@ -379,7 +379,7 @@ void tcu_print(struct tcu_device *tcu, const char *str)
 		aligned_str = aligned_buf;
 	}
 
-	regCount = EXT_REGS + UNPRIV_REGS + TOTAL_EPS(tcu) * EP_REGS;
+	regCount = EXT_REGS + UNPRIV_REGS;
 	buffer = tcu->unpriv_base + regCount;
 	rstr = (const Reg *)(aligned_str);
 	end = (const Reg *)(aligned_str + len);
