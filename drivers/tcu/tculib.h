@@ -63,7 +63,7 @@ static int tcu_log_level = LOG_INFO | LOG_ERR | LOG_ACT;
 /// The number of unprivileged registers
 #define UNPRIV_REGS 6
 /// The number of registers per EP
-#define EP_REGS 3
+#define EP_REGS 4
 /// The number of print registers
 #define PRINT_REGS 32
 
