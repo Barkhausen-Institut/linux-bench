@@ -59,7 +59,7 @@ static int tcu_log_level = LOG_INFO | LOG_ERR | LOG_ACT;
 
 #define TOTAL_EPS(tcu) (tcu_is_gem5(tcu) ? 192 : 128)
 /// The number of external registers
-#define EXT_REGS 3
+#define EXT_REGS 5
 /// The number of unprivileged registers
 #define UNPRIV_REGS 6
 /// The number of registers per EP
