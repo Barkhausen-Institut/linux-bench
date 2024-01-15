@@ -233,7 +233,7 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 		break;
 	case MemType_TCUEps:
 		pfn = MMIO_EPS_ADDR >> PAGE_SHIFT;
-		expected_size = MMIO_EPS_SIZE;
+		expected_size = (tcu_endpoints_size(tcu) + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
 		expected_prot = PROT_READ;
 		io = 1;
 		break;
@@ -266,7 +266,7 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 	spin_unlock_irqrestore(&tcu->lock, flags);
 
 	// check if the size and protection is as expected
-	if (size != expected_size) {
+	if (expected_size && size != expected_size) {
 		tculog(LOG_ERR, tcu->dev, "mmap unexpected size: %zu vs. %zu\n", size,
 		       expected_size);
 		return -EINVAL;

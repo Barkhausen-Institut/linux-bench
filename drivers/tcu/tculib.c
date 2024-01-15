@@ -1,6 +1,19 @@
 #include "tculib.h"
 
 typedef enum {
+    /// Stores the privileged flag (for now)
+    ExtReg_FEATURES = 0x0,
+    /// Stores the tile description
+    ExtReg_TILE_DESC = 0x1,
+    /// For external commands
+    ExtReg_CMD = 0x2,
+    /// The global address of the EP region
+    ExtReg_EPS_ADDR = 0x3,
+    /// The size of the EP region in bytes
+    ExtReg_EPS_SIZE = 0x4,
+} ExtReg;
+
+typedef enum {
 	/// For core requests
 	PrivReg_CORE_REQ = 0x0,
 	/// Controls the privileged interface
@@ -87,6 +100,11 @@ static inline Reg tcu_read_ep_reg(struct tcu_device *tcu, EpId ep, size_t reg)
             + EP_REGS * ep + reg);
 }
 
+static inline Reg tcu_read_ext_reg(struct tcu_device *tcu, unsigned int index)
+{
+	return ioread64(tcu->unpriv_base + index);
+}
+
 static inline void tcu_write_unpriv_reg(struct tcu_device *tcu, unsigned int index, Reg val)
 {
 	iowrite64(val, tcu->unpriv_base + EXT_REGS + index);
@@ -132,6 +150,11 @@ static inline Error tcu_get_priv_error(struct tcu_device *tcu)
 static inline Reg tcu_build_cmd(EpId ep, CmdOpCode cmd, Reg arg)
 {
 	return (arg << 25) | ((Reg)ep << 4) | cmd;
+}
+
+size_t tcu_endpoints_size(struct tcu_device *tcu)
+{
+    return tcu_read_ext_reg(tcu, ExtReg_EPS_SIZE);
 }
 
 Error tcu_tlb_insert(struct tcu_device *tcu, uint16_t asid, uint64_t virt,

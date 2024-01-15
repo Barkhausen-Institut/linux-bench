@@ -43,9 +43,9 @@ static int tcu_log_level = LOG_INFO | LOG_ERR | LOG_ACT;
 #define MMIO_PRIV_ADDR 0xf0001000
 #define MMIO_PRIV_SIZE (1 * PAGE_SIZE)
 #define MMIO_EPS_ADDR 0xf0002000
-#define MMIO_EPS_SIZE (2 * PAGE_SIZE)
+#define MMIO_EPS_MAXSIZE ((1 << 16) * EP_REGS * sizeof(Reg))
 #define MMIO_ADDR MMIO_UNPRIV_ADDR
-#define MMIO_SIZE (MMIO_UNPRIV_SIZE + MMIO_PRIV_SIZE + MMIO_EPS_SIZE)
+#define MMIO_SIZE (MMIO_UNPRIV_SIZE + MMIO_PRIV_SIZE + MMIO_EPS_MAXSIZE)
 
 #define LPAGE_SIZE (1 << 21)
 
@@ -146,6 +146,7 @@ static inline bool tcu_is_gem5(struct tcu_device *tcu)
 	return tcu->platform == 0;
 }
 
+size_t tcu_endpoints_size(struct tcu_device *tcu);
 Error tcu_tlb_insert(struct tcu_device *tcu, uint16_t asid, uint64_t virt, uint64_t phys, uint8_t perm);
 Error tcu_tlb_invalidate(struct tcu_device *tcu);
 Error tcu_abort_cmd(struct tcu_device *tcu, Reg *cmd);
