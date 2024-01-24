@@ -178,7 +178,7 @@ static long int tcu_ioctl(struct file *f,
 	long int res = -EINVAL;
 
 	if (cmd != IOCTL_WAIT_ACT)
-    	spin_lock_irqsave(&tcu->lock, flags);
+		spin_lock_irqsave(&tcu->lock, flags);
 
 	switch (cmd) {
 	case IOCTL_WAIT_ACT:
@@ -227,11 +227,13 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 	switch (ty) {
 	case MemType_TCU:
 		pfn = MMIO_UNPRIV_ADDR >> PAGE_SHIFT;
-		expected_size = MMIO_UNPRIV_SIZE;
+		expected_size = MMIO_UNPRIV_SIZE(tcu);
 		expected_prot = PROT_READ | PROT_WRITE;
 		io = 1;
 		break;
 	case MemType_TCUEps:
+		if (tcu->tcu_version.major < 3)
+			return -ENOTSUPP;
 		pfn = MMIO_EPS_ADDR >> PAGE_SHIFT;
 		expected_size = (tcu_endpoints_size(tcu) + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
 		expected_prot = PROT_READ;
@@ -491,6 +493,7 @@ static void destroy_tcu_dev(struct tcu_device *tcu)
 static int tcu_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct resource *tcu_res;
 	EnvData *m3_env;
 	dev_t dev_no;
 	int retval;
@@ -527,13 +530,20 @@ static int tcu_probe(struct platform_device *pdev)
 	if (dev_no == (dev_t)-1)
 		goto error_env;
 
-	// map MMIO region; both unprivileged and privileged interface
-	tcu->unpriv_base = (uint64_t *)ioremap(MMIO_ADDR, MMIO_SIZE);
-	if (!tcu->unpriv_base) {
+	// map MMIO region
+	tcu_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	tcu->unpriv_base = (uint64_t *)devm_ioremap_resource(&pdev->dev, tcu_res);
+	if (IS_ERR(tcu->unpriv_base)) {
 		tculog(LOG_ERR, dev, "ioremap for the TCU's MMIO region failed\n");
 		goto error_mmio;
 	}
-	tcu->priv_base = tcu->unpriv_base + (MMIO_UNPRIV_SIZE / sizeof(uint64_t));
+
+	// load TCU version first (some macros need that)
+	tcu->tcu_version = tcu_version(tcu);
+	tculog(LOG_INFO, tcu->dev, "Found TCU version %d.%d.%d\n",
+			tcu->tcu_version.major, tcu->tcu_version.minor, tcu->tcu_version.patch);
+
+	tcu->priv_base = tcu->unpriv_base + (MMIO_UNPRIV_SIZE(tcu) / sizeof(uint64_t));
 
 	// map receive buffer for side calls
 	tcu->rcv_buf = (uint8_t *)memremap(TMUP_RBUF_ADDR, TMUP_RBUF_SIZE, MEMREMAP_WB);

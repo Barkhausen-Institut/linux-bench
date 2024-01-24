@@ -39,13 +39,9 @@ static int tcu_log_level = LOG_INFO | LOG_ERR | LOG_ACT;
 #define INVALID_EP 0xffff
 
 #define MMIO_UNPRIV_ADDR 0xf0000000
-#define MMIO_UNPRIV_SIZE PAGE_SIZE
-#define MMIO_PRIV_ADDR 0xf0001000
+#define MMIO_UNPRIV_SIZE(tcu) (tcu->tcu_version.major < 3 ? (PAGE_SIZE * 2) : PAGE_SIZE)
 #define MMIO_PRIV_SIZE (1 * PAGE_SIZE)
 #define MMIO_EPS_ADDR 0xf0002000
-#define MMIO_EPS_MAXSIZE ((1 << 16) * EP_REGS * sizeof(Reg))
-#define MMIO_ADDR MMIO_UNPRIV_ADDR
-#define MMIO_SIZE (MMIO_UNPRIV_SIZE + MMIO_PRIV_SIZE + MMIO_EPS_MAXSIZE)
 
 #define LPAGE_SIZE (1 << 21)
 
@@ -59,11 +55,11 @@ static int tcu_log_level = LOG_INFO | LOG_ERR | LOG_ACT;
 
 #define TOTAL_EPS(tcu) (tcu_is_gem5(tcu) ? 192 : 128)
 /// The number of external registers
-#define EXT_REGS 5
+#define EXT_REGS(tcu) (tcu->tcu_version.major < 3 ? 3 : 5)
 /// The number of unprivileged registers
 #define UNPRIV_REGS 6
 /// The number of registers per EP
-#define EP_REGS 4
+#define EP_REGS(tcu) (tcu->tcu_version.major < 3 ? 3 : 4)
 /// The number of print registers
 #define PRINT_REGS 32
 
@@ -89,6 +85,12 @@ enum PageFlags {
 	PAGE_U = 32,
 };
 
+struct tcu_version {
+	uint16_t major;
+	uint8_t minor;
+	uint8_t patch;
+};
+
 struct tcu_device {
 	struct device *dev;
 	unsigned int major;
@@ -108,6 +110,7 @@ struct tcu_device {
 	// for receiving replies from m3 kernel
 	uint8_t *rpl_buf;
 
+    struct tcu_version tcu_version;
 	uint64_t tile_id;
 	uint64_t platform;
 	uint16_t tile_ids[MAX_CHIPS * MAX_TILES];
@@ -146,6 +149,7 @@ static inline bool tcu_is_gem5(struct tcu_device *tcu)
 	return tcu->platform == 0;
 }
 
+struct tcu_version tcu_version(struct tcu_device *tcu);
 size_t tcu_endpoints_size(struct tcu_device *tcu);
 Error tcu_tlb_insert(struct tcu_device *tcu, uint16_t asid, uint64_t virt, uint64_t phys, uint8_t perm);
 Error tcu_tlb_invalidate(struct tcu_device *tcu);

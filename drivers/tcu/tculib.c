@@ -96,8 +96,10 @@ static inline TileId tcu_nocid_to_tileid(struct tcu_device *tcu, uint16_t tile)
 
 static inline Reg tcu_read_ep_reg(struct tcu_device *tcu, EpId ep, size_t reg)
 {
+	if (tcu->tcu_version.major < 3)
+		return ioread64(tcu->unpriv_base + EXT_REGS(tcu) + UNPRIV_REGS + EP_REGS(tcu) * ep + reg);
 	return ioread64((tcu->unpriv_base + (MMIO_EPS_ADDR - MMIO_UNPRIV_ADDR) / sizeof(Reg))
-            + EP_REGS * ep + reg);
+			+ EP_REGS(tcu) * ep + reg);
 }
 
 static inline Reg tcu_read_ext_reg(struct tcu_device *tcu, unsigned int index)
@@ -107,12 +109,12 @@ static inline Reg tcu_read_ext_reg(struct tcu_device *tcu, unsigned int index)
 
 static inline void tcu_write_unpriv_reg(struct tcu_device *tcu, unsigned int index, Reg val)
 {
-	iowrite64(val, tcu->unpriv_base + EXT_REGS + index);
+	iowrite64(val, tcu->unpriv_base + EXT_REGS(tcu) + index);
 }
 
 static inline Reg tcu_read_unpriv_reg(struct tcu_device *tcu, unsigned int index)
 {
-	return ioread64(tcu->unpriv_base + EXT_REGS + index);
+	return ioread64(tcu->unpriv_base + EXT_REGS(tcu) + index);
 }
 
 static inline void tcu_write_priv_reg(struct tcu_device *tcu, unsigned int index, Reg val)
@@ -152,9 +154,21 @@ static inline Reg tcu_build_cmd(EpId ep, CmdOpCode cmd, Reg arg)
 	return (arg << 25) | ((Reg)ep << 4) | cmd;
 }
 
+struct tcu_version tcu_version(struct tcu_device *tcu)
+{
+	Reg features = tcu_read_ext_reg(tcu, ExtReg_FEATURES);
+	return (struct tcu_version){
+		.major = (features >> 32) & 0xFFFF,
+		.minor = (features >> 48) & 0xFF,
+		.patch = (features >> 56) & 0xFF,
+	};
+}
+
 size_t tcu_endpoints_size(struct tcu_device *tcu)
 {
-    return tcu_read_ext_reg(tcu, ExtReg_EPS_SIZE);
+	if(tcu->tcu_version.major < 3)
+		return tcu_is_gem5(tcu) ? 192 : 128;
+	return tcu_read_ext_reg(tcu, ExtReg_EPS_SIZE);
 }
 
 Error tcu_tlb_insert(struct tcu_device *tcu, uint16_t asid, uint64_t virt,
@@ -402,7 +416,10 @@ void tcu_print(struct tcu_device *tcu, const char *str)
 		aligned_str = aligned_buf;
 	}
 
-	regCount = EXT_REGS + UNPRIV_REGS;
+	if (tcu->tcu_version.major < 3)
+		regCount = EXT_REGS(tcu) + UNPRIV_REGS + TOTAL_EPS(tcu) * EP_REGS(tcu);
+	else
+		regCount = EXT_REGS(tcu) + UNPRIV_REGS;
 	buffer = tcu->unpriv_base + regCount;
 	rstr = (const Reg *)(aligned_str);
 	end = (const Reg *)(aligned_str + len);
