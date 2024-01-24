@@ -266,7 +266,7 @@ static int tcu_dev_mmap(struct file *file, struct vm_area_struct *vma)
 	spin_unlock_irqrestore(&tcu->lock, flags);
 
 	// check if the size and protection is as expected
-	if (expected_size && size != expected_size) {
+	if (size != expected_size) {
 		tculog(LOG_ERR, tcu->dev, "mmap unexpected size: %zu vs. %zu\n", size,
 		       expected_size);
 		return -EINVAL;
