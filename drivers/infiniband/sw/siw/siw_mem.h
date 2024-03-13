@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause */
+/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 
 /* Authors: Bernard Metzler <bmt@zurich.ibm.com> */
 /* Copyright (c) 2008-2019, IBM Corporation */
@@ -27,11 +27,6 @@ void siw_free_mem(struct kref *ref);
 static inline void siw_mem_put(struct siw_mem *mem)
 {
 	kref_put(&mem->ref, siw_free_mem);
-}
-
-static inline struct siw_mr *siw_mem2mr(struct siw_mem *m)
-{
-	return container_of(m, struct siw_mr, mem);
 }
 
 static inline void siw_unref_mem_sgl(struct siw_mem **mem, unsigned int num_sge)

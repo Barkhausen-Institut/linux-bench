@@ -698,6 +698,7 @@ static int rtl2832_read_status(struct dvb_frontend *fe, enum fe_status *status)
 			goto err;
 
 		constellation = (u8tmp >> 2) & 0x03; /* [3:2] */
+		ret = -EINVAL;
 		if (constellation > CONSTELLATION_NUM - 1)
 			goto err;
 
@@ -1020,8 +1021,7 @@ err:
 	return ret;
 }
 
-static int rtl2832_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int rtl2832_probe(struct i2c_client *client)
 {
 	struct rtl2832_platform_data *pdata = client->dev.platform_data;
 	struct i2c_adapter *i2c = client->adapter;
@@ -1109,7 +1109,7 @@ err:
 	return ret;
 }
 
-static int rtl2832_remove(struct i2c_client *client)
+static void rtl2832_remove(struct i2c_client *client)
 {
 	struct rtl2832_dev *dev = i2c_get_clientdata(client);
 
@@ -1122,8 +1122,6 @@ static int rtl2832_remove(struct i2c_client *client)
 	regmap_exit(dev->regmap);
 
 	kfree(dev);
-
-	return 0;
 }
 
 static const struct i2c_device_id rtl2832_id_table[] = {

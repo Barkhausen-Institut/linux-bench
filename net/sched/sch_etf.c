@@ -323,9 +323,6 @@ static int etf_enable_offload(struct net_device *dev, struct etf_sched_data *q,
 	struct tc_etf_qopt_offload etf = { };
 	int err;
 
-	if (q->offload)
-		return 0;
-
 	if (!ops->ndo_setup_tc) {
 		NL_SET_ERR_MSG(extack, "Specified device does not support ETF offload");
 		return -EOPNOTSUPP;
@@ -445,9 +442,6 @@ static void etf_reset(struct Qdisc *sch)
 	timesortedlist_clear(sch);
 	__qdisc_reset_queue(&sch->q);
 
-	sch->qstats.backlog = 0;
-	sch->q.qlen = 0;
-
 	q->last = 0;
 }
 
@@ -519,3 +513,4 @@ static void __exit etf_module_exit(void)
 module_init(etf_module_init)
 module_exit(etf_module_exit)
 MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Earliest TxTime First (ETF) qdisc");

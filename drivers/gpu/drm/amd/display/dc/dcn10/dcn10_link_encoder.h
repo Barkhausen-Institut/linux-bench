@@ -42,6 +42,7 @@
 #define LE_DCN_COMMON_REG_LIST(id) \
 	SRI(DIG_BE_CNTL, DIG, id), \
 	SRI(DIG_BE_EN_CNTL, DIG, id), \
+	SRI(DIG_CLOCK_PATTERN, DIG, id), \
 	SRI(TMDS_CTL_BITS, DIG, id), \
 	SRI(DP_CONFIG, DP, id), \
 	SRI(DP_DPHY_CNTL, DP, id), \
@@ -83,6 +84,7 @@ struct dcn10_link_enc_hpd_registers {
 struct dcn10_link_enc_registers {
 	uint32_t DIG_BE_CNTL;
 	uint32_t DIG_BE_EN_CNTL;
+	uint32_t DIG_CLOCK_PATTERN;
 	uint32_t DP_CONFIG;
 	uint32_t DP_DPHY_CNTL;
 	uint32_t DP_DPHY_INTERNAL_CTRL;
@@ -116,6 +118,7 @@ struct dcn10_link_enc_registers {
 	uint32_t RDPCSTX_PHY_CNTL4;
 	uint32_t RDPCSTX_PHY_CNTL5;
 	uint32_t RDPCSTX_PHY_CNTL6;
+	uint32_t RDPCSPIPE_PHY_CNTL6;
 	uint32_t RDPCSTX_PHY_CNTL7;
 	uint32_t RDPCSTX_PHY_CNTL8;
 	uint32_t RDPCSTX_PHY_CNTL9;
@@ -158,6 +161,15 @@ struct dcn10_link_enc_registers {
 	uint32_t PHYA_LINK_CNTL2;
 	uint32_t PHYB_LINK_CNTL2;
 	uint32_t PHYC_LINK_CNTL2;
+	uint32_t DIO_LINKA_CNTL;
+	uint32_t DIO_LINKB_CNTL;
+	uint32_t DIO_LINKC_CNTL;
+	uint32_t DIO_LINKD_CNTL;
+	uint32_t DIO_LINKE_CNTL;
+	uint32_t DIO_LINKF_CNTL;
+	uint32_t DIG_FIFO_CTRL0;
+	uint32_t DIO_CLK_CNTL;
+	uint32_t DIG_BE_CLK_CNTL;
 };
 
 #define LE_SF(reg_name, field_name, post_fix)\
@@ -168,6 +180,7 @@ struct dcn10_link_enc_registers {
 	LE_SF(DIG0_DIG_BE_CNTL, DIG_HPD_SELECT, mask_sh),\
 	LE_SF(DIG0_DIG_BE_CNTL, DIG_MODE, mask_sh),\
 	LE_SF(DIG0_DIG_BE_CNTL, DIG_FE_SOURCE_SELECT, mask_sh),\
+	LE_SF(DIG0_DIG_CLOCK_PATTERN, DIG_CLOCK_PATTERN, mask_sh),\
 	LE_SF(DIG0_TMDS_CTL_BITS, TMDS_CTL0, mask_sh), \
 	LE_SF(DP0_DP_DPHY_CNTL, DPHY_BYPASS, mask_sh),\
 	LE_SF(DP0_DP_DPHY_CNTL, DPHY_ATEST_SEL_LANE0, mask_sh),\
@@ -218,6 +231,7 @@ struct dcn10_link_enc_registers {
 	type DIG_HPD_SELECT;\
 	type DIG_MODE;\
 	type DIG_FE_SOURCE_SELECT;\
+	type DIG_CLOCK_PATTERN;\
 	type DPHY_BYPASS;\
 	type DPHY_ATEST_SEL_LANE0;\
 	type DPHY_ATEST_SEL_LANE1;\
@@ -456,16 +470,59 @@ struct dcn10_link_enc_registers {
 	type DPCS_TX_DATA_ORDER_INVERT_18_BIT;\
 	type RDPCS_TX_CLK_EN
 
+#define DCN31_LINK_ENCODER_REG_FIELD_LIST(type) \
+	type ENC_TYPE_SEL;\
+	type HPO_DP_ENC_SEL;\
+	type HPO_HDMI_ENC_SEL
+
+#define DCN32_LINK_ENCODER_REG_FIELD_LIST(type) \
+	type DIG_FIFO_OUTPUT_PIXEL_MODE
+
+#define DCN35_LINK_ENCODER_REG_FIELD_LIST(type) \
+	type DIG_BE_ENABLE;\
+	type DIG_RB_SWITCH_EN;\
+	type DIG_BE_MODE;\
+	type DIG_BE_CLK_EN;\
+	type DIG_BE_SOFT_RESET;\
+	type HDCP_SOFT_RESET;\
+	type DIG_BE_SYMCLK_G_CLOCK_ON;\
+	type DIG_BE_SYMCLK_G_HDCP_CLOCK_ON;\
+	type DIG_BE_SYMCLK_G_TMDS_CLOCK_ON;\
+	type DISPCLK_R_GATE_DIS;\
+	type DISPCLK_G_GATE_DIS;\
+	type REFCLK_R_GATE_DIS;\
+	type REFCLK_G_GATE_DIS;\
+	type SOCCLK_G_GATE_DIS;\
+	type SYMCLK_FE_R_GATE_DIS;\
+	type SYMCLK_FE_G_GATE_DIS;\
+	type SYMCLK_R_GATE_DIS;\
+	type SYMCLK_G_GATE_DIS;\
+	type DIO_FGCG_REP_DIS;\
+	type DISPCLK_G_HDCP_GATE_DIS;\
+	type SYMCLKA_G_HDCP_GATE_DIS;\
+	type SYMCLKB_G_HDCP_GATE_DIS;\
+	type SYMCLKC_G_HDCP_GATE_DIS;\
+	type SYMCLKD_G_HDCP_GATE_DIS;\
+	type SYMCLKE_G_HDCP_GATE_DIS;\
+	type SYMCLKF_G_HDCP_GATE_DIS;\
+	type SYMCLKG_G_HDCP_GATE_DIS
+
 struct dcn10_link_enc_shift {
 	DCN_LINK_ENCODER_REG_FIELD_LIST(uint8_t);
 	DCN20_LINK_ENCODER_REG_FIELD_LIST(uint8_t);
 	DCN30_LINK_ENCODER_REG_FIELD_LIST(uint8_t);
+	DCN31_LINK_ENCODER_REG_FIELD_LIST(uint8_t);
+	DCN32_LINK_ENCODER_REG_FIELD_LIST(uint8_t);
+	DCN35_LINK_ENCODER_REG_FIELD_LIST(uint8_t);
 };
 
 struct dcn10_link_enc_mask {
 	DCN_LINK_ENCODER_REG_FIELD_LIST(uint32_t);
 	DCN20_LINK_ENCODER_REG_FIELD_LIST(uint32_t);
 	DCN30_LINK_ENCODER_REG_FIELD_LIST(uint32_t);
+	DCN31_LINK_ENCODER_REG_FIELD_LIST(uint32_t);
+	DCN32_LINK_ENCODER_REG_FIELD_LIST(uint32_t);
+	DCN35_LINK_ENCODER_REG_FIELD_LIST(uint32_t);
 };
 
 struct dcn10_link_encoder {
@@ -536,6 +593,13 @@ void dcn10_link_encoder_enable_tmds_output(
 	enum signal_type signal,
 	uint32_t pixel_clock);
 
+void dcn10_link_encoder_enable_tmds_output_with_clk_pattern_wa(
+	struct link_encoder *enc,
+	enum clock_source_id clock_source,
+	enum dc_color_depth color_depth,
+	enum signal_type signal,
+	uint32_t pixel_clock);
+
 /* enables DP PHY output */
 void dcn10_link_encoder_enable_dp_output(
 	struct link_encoder *enc,
@@ -556,7 +620,8 @@ void dcn10_link_encoder_disable_output(
 /* set DP lane settings */
 void dcn10_link_encoder_dp_set_lane_settings(
 	struct link_encoder *enc,
-	const struct link_training_settings *link_settings);
+	const struct dc_link_settings *link_settings,
+	const struct dc_lane_settings lane_settings[LANE_COUNT_DP_MAX]);
 
 void dcn10_link_encoder_dp_set_phy_pattern(
 	struct link_encoder *enc,

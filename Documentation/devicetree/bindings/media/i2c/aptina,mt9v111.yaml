@@ -41,9 +41,9 @@ properties:
     maxItems: 1
 
   port:
-    type: object
+    $ref: /schemas/graph.yaml#/properties/port
     description: |
-      Output video port. See ../video-interfaces.txt.
+      Output video port.
 
 required:
   - compatible
@@ -55,7 +55,7 @@ additionalProperties: false
 
 examples:
   - |
-    i2c0 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 

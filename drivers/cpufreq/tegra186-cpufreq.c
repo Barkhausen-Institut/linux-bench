@@ -65,8 +65,8 @@ struct tegra186_cpufreq_cluster {
 
 struct tegra186_cpufreq_data {
 	void __iomem *regs;
-	struct tegra186_cpufreq_cluster *clusters;
 	const struct tegra186_cpufreq_cpu *cpus;
+	struct tegra186_cpufreq_cluster clusters[];
 };
 
 static int tegra186_cpufreq_init(struct cpufreq_policy *policy)
@@ -117,7 +117,7 @@ static unsigned int tegra186_cpufreq_get(unsigned int cpu)
 
 static struct cpufreq_driver tegra186_cpufreq_driver = {
 	.name = "tegra186",
-	.flags = CPUFREQ_STICKY | CPUFREQ_HAVE_GOVERNOR_PER_POLICY |
+	.flags = CPUFREQ_HAVE_GOVERNOR_PER_POLICY |
 			CPUFREQ_NEED_INITIAL_FREQ_CHECK,
 	.get = tegra186_cpufreq_get,
 	.verify = cpufreq_generic_frequency_table_verify,
@@ -157,6 +157,10 @@ static struct cpufreq_frequency_table *init_vhint_table(
 	err = tegra_bpmp_transfer(bpmp, &msg);
 	if (err) {
 		table = ERR_PTR(err);
+		goto free;
+	}
+	if (msg.rx.ret) {
+		table = ERR_PTR(-EINVAL);
 		goto free;
 	}
 
@@ -217,13 +221,10 @@ static int tegra186_cpufreq_probe(struct platform_device *pdev)
 	struct tegra_bpmp *bpmp;
 	unsigned int i = 0, err;
 
-	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc(&pdev->dev,
+			    struct_size(data, clusters, TEGRA186_NUM_CLUSTERS),
+			    GFP_KERNEL);
 	if (!data)
-		return -ENOMEM;
-
-	data->clusters = devm_kcalloc(&pdev->dev, TEGRA186_NUM_CLUSTERS,
-				      sizeof(*data->clusters), GFP_KERNEL);
-	if (!data->clusters)
 		return -ENOMEM;
 
 	data->cpus = tegra186_cpus;
@@ -258,11 +259,9 @@ put_bpmp:
 	return err;
 }
 
-static int tegra186_cpufreq_remove(struct platform_device *pdev)
+static void tegra186_cpufreq_remove(struct platform_device *pdev)
 {
 	cpufreq_unregister_driver(&tegra186_cpufreq_driver);
-
-	return 0;
 }
 
 static const struct of_device_id tegra186_cpufreq_of_match[] = {
@@ -277,7 +276,7 @@ static struct platform_driver tegra186_cpufreq_platform_driver = {
 		.of_match_table = tegra186_cpufreq_of_match,
 	},
 	.probe = tegra186_cpufreq_probe,
-	.remove = tegra186_cpufreq_remove,
+	.remove_new = tegra186_cpufreq_remove,
 };
 module_platform_driver(tegra186_cpufreq_platform_driver);
 

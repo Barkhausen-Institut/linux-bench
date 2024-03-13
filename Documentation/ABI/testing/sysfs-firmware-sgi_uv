@@ -39,8 +39,8 @@ Description:
 
 		The uv_type entry contains the hub revision number.
 		This value can be used to identify the UV system version::
-			"0.*" = Hubless UV ('*' is subtype)
 
+			"0.*" = Hubless UV ('*' is subtype)
 			"3.0" = UV2
 			"5.0" = UV3
 			"7.0" = UV4
@@ -102,12 +102,12 @@ Description:
 			conn_port
 
 		The conn_hub entry contains a value representing the unique
-		oridinal value of the hub on the other end of the fabric
+		ordinal value of the hub on the other end of the fabric
 		cable plugged into the port. If the port is disconnected,
 		the value returned will be -1.
 
 		The conn_port entry contains a value representing the unique
-		oridinal value of the port on the other end of the fabric cable
+		ordinal value of the port on the other end of the fabric cable
 		plugged into the port. If the port is disconnected, the value
 		returned will be -1.
 

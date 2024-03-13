@@ -1306,9 +1306,12 @@ static const struct snd_pci_quirk ca0132_quirks[] = {
 	SND_PCI_QUIRK(0x1458, 0xA026, "Gigabyte G1.Sniper Z97", QUIRK_R3DI),
 	SND_PCI_QUIRK(0x1458, 0xA036, "Gigabyte GA-Z170X-Gaming 7", QUIRK_R3DI),
 	SND_PCI_QUIRK(0x3842, 0x1038, "EVGA X99 Classified", QUIRK_R3DI),
+	SND_PCI_QUIRK(0x3842, 0x104b, "EVGA X299 Dark", QUIRK_R3DI),
+	SND_PCI_QUIRK(0x3842, 0x1055, "EVGA Z390 DARK", QUIRK_R3DI),
 	SND_PCI_QUIRK(0x1102, 0x0013, "Recon3D", QUIRK_R3D),
 	SND_PCI_QUIRK(0x1102, 0x0018, "Recon3D", QUIRK_R3D),
 	SND_PCI_QUIRK(0x1102, 0x0051, "Sound Blaster AE-5", QUIRK_AE5),
+	SND_PCI_QUIRK(0x1102, 0x0191, "Sound Blaster AE-5 Plus", QUIRK_AE5),
 	SND_PCI_QUIRK(0x1102, 0x0081, "Sound Blaster AE-7", QUIRK_AE7),
 	{}
 };
@@ -2269,7 +2272,7 @@ static int dspio_send_scp_message(struct hda_codec *codec,
 				  unsigned int *bytes_returned)
 {
 	struct ca0132_spec *spec = codec->spec;
-	int status = -1;
+	int status;
 	unsigned int scp_send_size = 0;
 	unsigned int total_size;
 	bool waiting_for_resp = false;
@@ -2338,7 +2341,7 @@ static int dspio_send_scp_message(struct hda_codec *codec,
 }
 
 /**
- * Prepare and send the SCP message to DSP
+ * dspio_scp - Prepare and send the SCP message to DSP
  * @codec: the HDA codec
  * @mod_id: ID of the DSP module to send the command
  * @src_id: ID of the source
@@ -2453,7 +2456,7 @@ static int dspio_set_uint_param(struct hda_codec *codec, int mod_id,
 static int dspio_alloc_dma_chan(struct hda_codec *codec, unsigned int *dma_chan)
 {
 	int status = 0;
-	unsigned int size = sizeof(dma_chan);
+	unsigned int size = sizeof(*dma_chan);
 
 	codec_dbg(codec, "     dspio_alloc_dma_chan() -- begin\n");
 	status = dspio_scp(codec, MASTERCONTROL, 0x20,
@@ -2865,7 +2868,7 @@ static int dsp_dma_stop(struct hda_codec *codec,
 }
 
 /**
- * Allocate router ports
+ * dsp_allocate_router_ports - Allocate router ports
  *
  * @codec: the HDA codec
  * @num_chans: number of channels in the stream
@@ -2961,7 +2964,6 @@ static int dsp_allocate_ports_format(struct hda_codec *codec,
 			const unsigned short fmt,
 			unsigned int *port_map)
 {
-	int status;
 	unsigned int num_chans;
 
 	unsigned int sample_rate_div = ((get_hdafmt_rate(fmt) >> 0) & 3) + 1;
@@ -2975,9 +2977,7 @@ static int dsp_allocate_ports_format(struct hda_codec *codec,
 
 	num_chans = get_hdafmt_chs(fmt) + 1;
 
-	status = dsp_allocate_ports(codec, num_chans, rate_multi, port_map);
-
-	return status;
+	return dsp_allocate_ports(codec, num_chans, rate_multi, port_map);
 }
 
 /*
@@ -3178,8 +3178,7 @@ static int dspxfr_hci_write(struct hda_codec *codec,
 }
 
 /**
- * Write a block of data into DSP code or data RAM using pre-allocated
- * DMA engine.
+ * dspxfr_one_seg - Write a block of data into DSP code or data RAM using pre-allocated DMA engine.
  *
  * @codec: the HDA codec
  * @fls: pointer to a fast load image
@@ -3376,7 +3375,7 @@ static int dspxfr_one_seg(struct hda_codec *codec,
 }
 
 /**
- * Write the entire DSP image of a DSP code/data overlay to DSP memories
+ * dspxfr_image - Write the entire DSP image of a DSP code/data overlay to DSP memories
  *
  * @codec: the HDA codec
  * @fls_data: pointer to a fast load image
@@ -4230,8 +4229,10 @@ static int tuning_ctl_set(struct hda_codec *codec, hda_nid_t nid,
 
 	for (i = 0; i < TUNING_CTLS_COUNT; i++)
 		if (nid == ca0132_tuning_ctls[i].nid)
-			break;
+			goto found;
 
+	return -EINVAL;
+found:
 	snd_hda_power_up(codec);
 	dspio_set_param(codec, ca0132_tuning_ctls[i].mid, 0x20,
 			ca0132_tuning_ctls[i].req,
@@ -7041,11 +7042,11 @@ static int ca0132_build_controls(struct hda_codec *codec)
 					spec->tlv);
 		snd_hda_add_vmaster(codec, "Master Playback Volume",
 					spec->tlv, ca0132_alt_follower_pfxs,
-					"Playback Volume");
+					"Playback Volume", 0);
 		err = __snd_hda_add_vmaster(codec, "Master Playback Switch",
 					    NULL, ca0132_alt_follower_pfxs,
 					    "Playback Switch",
-					    true, &spec->vmaster_mute.sw_kctl);
+					    true, 0, &spec->vmaster_mute.sw_kctl);
 		if (err < 0)
 			return err;
 	}
@@ -7598,7 +7599,7 @@ static void ca0132_alt_free_active_dma_channels(struct hda_codec *codec)
  */
 static void ca0132_alt_start_dsp_audio_streams(struct hda_codec *codec)
 {
-	const unsigned int dsp_dma_stream_ids[] = { 0x0c, 0x03, 0x04 };
+	static const unsigned int dsp_dma_stream_ids[] = { 0x0c, 0x03, 0x04 };
 	struct ca0132_spec *spec = codec->spec;
 	unsigned int i, tmp;
 
@@ -9682,11 +9683,6 @@ static void dbpro_free(struct hda_codec *codec)
 	kfree(codec->spec);
 }
 
-static void ca0132_reboot_notify(struct hda_codec *codec)
-{
-	codec->patch_ops.free(codec);
-}
-
 #ifdef CONFIG_PM
 static int ca0132_suspend(struct hda_codec *codec)
 {
@@ -9706,7 +9702,6 @@ static const struct hda_codec_ops ca0132_patch_ops = {
 #ifdef CONFIG_PM
 	.suspend = ca0132_suspend,
 #endif
-	.reboot_notify = ca0132_reboot_notify,
 };
 
 static const struct hda_codec_ops dbpro_patch_ops = {

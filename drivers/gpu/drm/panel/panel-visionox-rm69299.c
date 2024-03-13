@@ -5,7 +5,7 @@
 
 #include <linux/delay.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/mod_devicetable.h>
 #include <linux/gpio/consumer.h>
 #include <linux/regulator/consumer.h>
 
@@ -20,8 +20,6 @@ struct visionox_rm69299 {
 	struct regulator_bulk_data supplies[2];
 	struct gpio_desc *reset_gpio;
 	struct mipi_dsi_device *dsi;
-	bool prepared;
-	bool enabled;
 };
 
 static inline struct visionox_rm69299 *panel_to_ctx(struct drm_panel *panel)
@@ -80,7 +78,6 @@ static int visionox_rm69299_unprepare(struct drm_panel *panel)
 
 	ret = visionox_rm69299_power_off(ctx);
 
-	ctx->prepared = false;
 	return ret;
 }
 
@@ -88,9 +85,6 @@ static int visionox_rm69299_prepare(struct drm_panel *panel)
 {
 	struct visionox_rm69299 *ctx = panel_to_ctx(panel);
 	int ret;
-
-	if (ctx->prepared)
-		return 0;
 
 	ret = visionox_rm69299_power_on(ctx);
 	if (ret < 0)
@@ -140,8 +134,6 @@ static int visionox_rm69299_prepare(struct drm_panel *panel)
 	/* Per DSI spec wait 120ms after sending set_display_on DCS command */
 	msleep(120);
 
-	ctx->prepared = true;
-
 	return 0;
 
 power_off:
@@ -168,7 +160,8 @@ static int visionox_rm69299_get_modes(struct drm_panel *panel,
 	struct visionox_rm69299 *ctx = panel_to_ctx(panel);
 	struct drm_display_mode *mode;
 
-	mode = drm_mode_create(connector->dev);
+	mode = drm_mode_duplicate(connector->dev,
+				  &visionox_rm69299_1080x2248_60hz);
 	if (!mode) {
 		dev_err(ctx->panel.dev, "failed to create a new display mode\n");
 		return 0;
@@ -176,7 +169,6 @@ static int visionox_rm69299_get_modes(struct drm_panel *panel,
 
 	connector->display_info.width_mm = 74;
 	connector->display_info.height_mm = 131;
-	drm_mode_copy(mode, &visionox_rm69299_1080x2248_60hz);
 	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
 	drm_mode_probed_add(connector, mode);
 
@@ -256,7 +248,7 @@ err_dsi_attach:
 	return ret;
 }
 
-static int visionox_rm69299_remove(struct mipi_dsi_device *dsi)
+static void visionox_rm69299_remove(struct mipi_dsi_device *dsi)
 {
 	struct visionox_rm69299 *ctx = mipi_dsi_get_drvdata(dsi);
 
@@ -264,7 +256,6 @@ static int visionox_rm69299_remove(struct mipi_dsi_device *dsi)
 	mipi_dsi_device_unregister(ctx->dsi);
 
 	drm_panel_remove(&ctx->panel);
-	return 0;
 }
 
 static const struct of_device_id visionox_rm69299_of_match[] = {

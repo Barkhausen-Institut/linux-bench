@@ -10,11 +10,9 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_gpio.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/spi/spi.h>
 #include <linux/i2c.h>
 
@@ -331,7 +329,7 @@ static int rx6110_probe(struct rx6110_data *rx6110, struct device *dev)
 	return 0;
 }
 
-#ifdef CONFIG_SPI_MASTER
+#if IS_ENABLED(CONFIG_SPI_MASTER)
 static struct regmap_config regmap_spi_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
@@ -376,7 +374,7 @@ static const struct spi_device_id rx6110_spi_id[] = {
 };
 MODULE_DEVICE_TABLE(spi, rx6110_spi_id);
 
-static const struct of_device_id rx6110_spi_of_match[] = {
+static const __maybe_unused struct of_device_id rx6110_spi_of_match[] = {
 	{ .compatible = "epson,rx6110" },
 	{ },
 };
@@ -411,7 +409,7 @@ static void rx6110_spi_unregister(void)
 }
 #endif /* CONFIG_SPI_MASTER */
 
-#ifdef CONFIG_I2C
+#if IS_ENABLED(CONFIG_I2C)
 static struct regmap_config regmap_i2c_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
@@ -419,10 +417,9 @@ static struct regmap_config regmap_i2c_config = {
 	.read_flag_mask = 0x80,
 };
 
-static int rx6110_i2c_probe(struct i2c_client *client,
-			    const struct i2c_device_id *id)
+static int rx6110_i2c_probe(struct i2c_client *client)
 {
-	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
+	struct i2c_adapter *adapter = client->adapter;
 	struct rx6110_data *rx6110;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA
@@ -447,6 +444,12 @@ static int rx6110_i2c_probe(struct i2c_client *client,
 	return rx6110_probe(rx6110, &client->dev);
 }
 
+static const struct acpi_device_id rx6110_i2c_acpi_match[] = {
+	{ "SECC6110" },
+	{ }
+};
+MODULE_DEVICE_TABLE(acpi, rx6110_i2c_acpi_match);
+
 static const struct i2c_device_id rx6110_i2c_id[] = {
 	{ "rx6110", 0 },
 	{ }
@@ -456,6 +459,7 @@ MODULE_DEVICE_TABLE(i2c, rx6110_i2c_id);
 static struct i2c_driver rx6110_i2c_driver = {
 	.driver = {
 		.name = RX6110_DRIVER_NAME,
+		.acpi_match_table = rx6110_i2c_acpi_match,
 	},
 	.probe		= rx6110_i2c_probe,
 	.id_table	= rx6110_i2c_id,

@@ -37,13 +37,14 @@ properties:
     maxItems: 1
 
   port:
-    type: object
+    $ref: /schemas/graph.yaml#/$defs/port-base
     description: |
-      Video output port. See ../video-interfaces.txt.
+      Video output port.
 
     properties:
       endpoint:
-        type: object
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
 
         properties:
           bus-type:
@@ -91,8 +92,6 @@ properties:
         required:
           - bus-type
 
-        unevaluatedProperties: false
-
     additionalProperties: false
 
 required:
@@ -106,8 +105,9 @@ additionalProperties: false
 examples:
   - |
     #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/media/video-interfaces.h>
 
-    i2c0 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
         ov772x: camera@21 {
@@ -119,7 +119,7 @@ examples:
 
             port {
                 ov772x_0: endpoint {
-                    bus-type = <5>;
+                    bus-type = <MEDIA_BUS_TYPE_PARALLEL>;
                     vsync-active = <0>;
                     hsync-active = <0>;
                     pclk-sample = <0>;

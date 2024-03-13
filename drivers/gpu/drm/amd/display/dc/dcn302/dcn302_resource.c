@@ -43,8 +43,11 @@
 #include "dcn20/dcn20_dsc.h"
 #include "dcn20/dcn20_resource.h"
 
+#include "dml/dcn30/dcn30_fpu.h"
+
 #include "dcn10/dcn10_resource.h"
 
+#include "link.h"
 #include "dce/dce_abm.h"
 #include "dce/dce_audio.h"
 #include "dce/dce_aux.h"
@@ -53,155 +56,27 @@
 #include "dce/dce_i2c_hw.h"
 #include "dce/dce_panel_cntl.h"
 #include "dce/dmub_abm.h"
+#include "dce/dmub_psr.h"
+#include "clk_mgr.h"
 
 #include "hw_sequencer_private.h"
 #include "reg_helper.h"
 #include "resource.h"
 #include "vm_helper.h"
 
+#include "dml/dcn302/dcn302_fpu.h"
+
 #include "dimgrey_cavefish_ip_offset.h"
 #include "dcn/dcn_3_0_2_offset.h"
 #include "dcn/dcn_3_0_2_sh_mask.h"
-#include "dcn/dpcs_3_0_0_offset.h"
-#include "dcn/dpcs_3_0_0_sh_mask.h"
+#include "dpcs/dpcs_3_0_0_offset.h"
+#include "dpcs/dpcs_3_0_0_sh_mask.h"
 #include "nbio/nbio_7_4_offset.h"
 #include "amdgpu_socbb.h"
 
+#define DC_LOGGER \
+	dc->ctx->logger
 #define DC_LOGGER_INIT(logger)
-
-struct _vcs_dpi_ip_params_st dcn3_02_ip = {
-		.use_min_dcfclk = 0,
-		.clamp_min_dcfclk = 0,
-		.odm_capable = 1,
-		.gpuvm_enable = 1,
-		.hostvm_enable = 0,
-		.gpuvm_max_page_table_levels = 4,
-		.hostvm_max_page_table_levels = 4,
-		.hostvm_cached_page_table_levels = 0,
-		.pte_group_size_bytes = 2048,
-		.num_dsc = 5,
-		.rob_buffer_size_kbytes = 184,
-		.det_buffer_size_kbytes = 184,
-		.dpte_buffer_size_in_pte_reqs_luma = 64,
-		.dpte_buffer_size_in_pte_reqs_chroma = 34,
-		.pde_proc_buffer_size_64k_reqs = 48,
-		.dpp_output_buffer_pixels = 2560,
-		.opp_output_buffer_lines = 1,
-		.pixel_chunk_size_kbytes = 8,
-		.pte_enable = 1,
-		.max_page_table_levels = 2,
-		.pte_chunk_size_kbytes = 2,  // ?
-		.meta_chunk_size_kbytes = 2,
-		.writeback_chunk_size_kbytes = 8,
-		.line_buffer_size_bits = 789504,
-		.is_line_buffer_bpp_fixed = 0,  // ?
-		.line_buffer_fixed_bpp = 0,     // ?
-		.dcc_supported = true,
-		.writeback_interface_buffer_size_kbytes = 90,
-		.writeback_line_buffer_buffer_size = 0,
-		.max_line_buffer_lines = 12,
-		.writeback_luma_buffer_size_kbytes = 12,  // writeback_line_buffer_buffer_size = 656640
-		.writeback_chroma_buffer_size_kbytes = 8,
-		.writeback_chroma_line_buffer_width_pixels = 4,
-		.writeback_max_hscl_ratio = 1,
-		.writeback_max_vscl_ratio = 1,
-		.writeback_min_hscl_ratio = 1,
-		.writeback_min_vscl_ratio = 1,
-		.writeback_max_hscl_taps = 1,
-		.writeback_max_vscl_taps = 1,
-		.writeback_line_buffer_luma_buffer_size = 0,
-		.writeback_line_buffer_chroma_buffer_size = 14643,
-		.cursor_buffer_size = 8,
-		.cursor_chunk_size = 2,
-		.max_num_otg = 5,
-		.max_num_dpp = 5,
-		.max_num_wb = 1,
-		.max_dchub_pscl_bw_pix_per_clk = 4,
-		.max_pscl_lb_bw_pix_per_clk = 2,
-		.max_lb_vscl_bw_pix_per_clk = 4,
-		.max_vscl_hscl_bw_pix_per_clk = 4,
-		.max_hscl_ratio = 6,
-		.max_vscl_ratio = 6,
-		.hscl_mults = 4,
-		.vscl_mults = 4,
-		.max_hscl_taps = 8,
-		.max_vscl_taps = 8,
-		.dispclk_ramp_margin_percent = 1,
-		.underscan_factor = 1.11,
-		.min_vblank_lines = 32,
-		.dppclk_delay_subtotal = 46,
-		.dynamic_metadata_vm_enabled = true,
-		.dppclk_delay_scl_lb_only = 16,
-		.dppclk_delay_scl = 50,
-		.dppclk_delay_cnvc_formatter = 27,
-		.dppclk_delay_cnvc_cursor = 6,
-		.dispclk_delay_subtotal = 119,
-		.dcfclk_cstate_latency = 5.2, // SRExitTime
-		.max_inter_dcn_tile_repeaters = 8,
-		.max_num_hdmi_frl_outputs = 1,
-		.odm_combine_4to1_supported = true,
-
-		.xfc_supported = false,
-		.xfc_fill_bw_overhead_percent = 10.0,
-		.xfc_fill_constant_bytes = 0,
-		.gfx7_compat_tiling_supported = 0,
-		.number_of_cursors = 1,
-};
-
-struct _vcs_dpi_soc_bounding_box_st dcn3_02_soc = {
-		.clock_limits = {
-				{
-						.state = 0,
-						.dispclk_mhz = 562.0,
-						.dppclk_mhz = 300.0,
-						.phyclk_mhz = 300.0,
-						.phyclk_d18_mhz = 667.0,
-						.dscclk_mhz = 405.6,
-				},
-		},
-
-		.min_dcfclk = 500.0, /* TODO: set this to actual min DCFCLK */
-		.num_states = 1,
-		.sr_exit_time_us = 5.20,
-		.sr_enter_plus_exit_time_us = 9.60,
-		.urgent_latency_us = 4.0,
-		.urgent_latency_pixel_data_only_us = 4.0,
-		.urgent_latency_pixel_mixed_with_vm_data_us = 4.0,
-		.urgent_latency_vm_data_only_us = 4.0,
-		.urgent_out_of_order_return_per_channel_pixel_only_bytes = 4096,
-		.urgent_out_of_order_return_per_channel_pixel_and_vm_bytes = 4096,
-		.urgent_out_of_order_return_per_channel_vm_only_bytes = 4096,
-		.pct_ideal_dram_sdp_bw_after_urgent_pixel_only = 80.0,
-		.pct_ideal_dram_sdp_bw_after_urgent_pixel_and_vm = 60.0,
-		.pct_ideal_dram_sdp_bw_after_urgent_vm_only = 40.0,
-		.max_avg_sdp_bw_use_normal_percent = 60.0,
-		.max_avg_dram_bw_use_normal_percent = 40.0,
-		.writeback_latency_us = 12.0,
-		.max_request_size_bytes = 256,
-		.fabric_datapath_to_dcn_data_return_bytes = 64,
-		.dcn_downspread_percent = 0.5,
-		.downspread_percent = 0.38,
-		.dram_page_open_time_ns = 50.0,
-		.dram_rw_turnaround_time_ns = 17.5,
-		.dram_return_buffer_per_channel_bytes = 8192,
-		.round_trip_ping_latency_dcfclk_cycles = 156,
-		.urgent_out_of_order_return_per_channel_bytes = 4096,
-		.channel_interleave_bytes = 256,
-		.num_banks = 8,
-		.gpuvm_min_page_size_bytes = 4096,
-		.hostvm_min_page_size_bytes = 4096,
-		.dram_clock_change_latency_us = 350,
-		.dummy_pstate_latency_us = 5,
-		.writeback_dram_clock_change_latency_us = 23.0,
-		.return_bus_width_bytes = 64,
-		.dispclk_dppclk_vco_speed_mhz = 3650,
-		.xfc_bus_transport_time_us = 20,      // ?
-		.xfc_xbuf_latency_tolerance_us = 4,  // ?
-		.use_urgent_burst_bw = 1,            // ?
-		.do_urgent_latency_adjustment = true,
-		.urgent_latency_adjustment_fabric_clock_component_us = 1.0,
-		.urgent_latency_adjustment_fabric_clock_reference_mhz = 1000,
-};
 
 static const struct dc_debug_options debug_defaults_drv = {
 		.disable_dmcu = true,
@@ -221,23 +96,18 @@ static const struct dc_debug_options debug_defaults_drv = {
 		.underflow_assert_delay_us = 0xFFFFFFFF,
 		.dwb_fi_phase = -1, // -1 = disable,
 		.dmub_command_table = true,
+		.use_max_lb = true,
+		.exit_idle_opt_for_cursor_updates = true,
+		.enable_legacy_fast_update = false,
+		.using_dml2 = false,
 };
 
-static const struct dc_debug_options debug_defaults_diags = {
-		.disable_dmcu = true,
-		.force_abm_enable = false,
-		.timing_trace = true,
-		.clock_trace = true,
-		.disable_dpp_power_gate = true,
-		.disable_hubp_power_gate = true,
-		.disable_clock_gate = true,
-		.disable_pplib_clock_request = true,
-		.disable_pplib_wm_range = true,
-		.disable_stutter = false,
-		.scl_reset_length10 = true,
-		.dwb_fi_phase = -1, // -1 = disable
-		.dmub_command_table = true,
-		.enable_tri_buf = true,
+static const struct dc_panel_config panel_config_defaults = {
+		.psr = {
+			.disable_psr = false,
+			.disallow_psrsu = false,
+			.disallow_replay = false,
+		},
 };
 
 enum dcn302_clk_src_array_id {
@@ -264,14 +134,12 @@ static const struct resource_caps res_cap_dcn302 = {
 
 static const struct dc_plane_cap plane_cap = {
 		.type = DC_PLANE_TYPE_DCN_UNIVERSAL,
-		.blends_with_above = true,
-		.blends_with_below = true,
 		.per_pixel_alpha = true,
 		.pixel_format_support = {
 				.argb8888 = true,
 				.nv12 = true,
 				.fp16 = true,
-				.p010 = false,
+				.p010 = true,
 				.ayuv = false,
 		},
 		.max_upscale_factor = {
@@ -279,10 +147,11 @@ static const struct dc_plane_cap plane_cap = {
 				.nv12 = 16000,
 				.fp16 = 16000
 		},
+		/* 6:1 downscaling ratio: 1000/6 = 166.666 */
 		.max_downscale_factor = {
-				.argb8888 = 600,
-				.nv12 = 600,
-				.fp16 = 600
+				.argb8888 = 167,
+				.nv12 = 167,
+				.fp16 = 167
 		},
 		16,
 		16
@@ -300,7 +169,6 @@ static const struct dc_plane_cap plane_cap = {
 		mm ## reg_name
 
 /* DCN */
-#undef BASE_INNER
 #define BASE_INNER(seg) DCN_BASE__INST0_SEG ## seg
 
 #define BASE(seg) BASE_INNER(seg)
@@ -332,6 +200,9 @@ static const struct dc_plane_cap plane_cap = {
 #define SRII_DWB(reg_name, temp_name, block, id)\
 		.reg_name[id] = BASE(mm ## block ## id ## _ ## temp_name ## _BASE_IDX) + \
 		mm ## block ## id ## _ ## temp_name
+
+#define SF_DWB2(reg_name, block, id, field_name, post_fix)	\
+	.field_name = reg_name ## __ ## field_name ## post_fix
 
 #define SRII_MPC_RMU(reg_name, block, id)\
 		.RMU##_##reg_name[id] = BASE(mm ## block ## id ## _ ## reg_name ## _BASE_IDX) + \
@@ -536,8 +407,12 @@ static struct stream_encoder *dcn302_stream_encoder_create(enum engine_id eng_id
 	vpg = dcn302_vpg_create(ctx, vpg_inst);
 	afmt = dcn302_afmt_create(ctx, afmt_inst);
 
-	if (!enc1 || !vpg || !afmt)
+	if (!enc1 || !vpg || !afmt) {
+		kfree(enc1);
+		kfree(vpg);
+		kfree(afmt);
 		return NULL;
+	}
 
 	dcn30_dio_stream_encoder_construct(enc1, ctx, ctx->dc_bios, eng_id, vpg, afmt, &stream_enc_regs[eng_id],
 			&se_shift, &se_mask);
@@ -577,6 +452,7 @@ static struct clock_source *dcn302_clock_source_create(struct dc_context *ctx, s
 		return &clk_src->base;
 	}
 
+	kfree(clk_src);
 	BREAK_TO_DEBUGGER();
 	return NULL;
 }
@@ -1011,7 +887,9 @@ static const struct dcn10_link_enc_hpd_registers link_enc_hpd_regs[] = {
 		hpd_regs(4)
 };
 
-static struct link_encoder *dcn302_link_encoder_create(const struct encoder_init_data *enc_init_data)
+static struct link_encoder *dcn302_link_encoder_create(
+	struct dc_context *ctx,
+	const struct encoder_init_data *enc_init_data)
 {
 	struct dcn20_link_encoder *enc20 = kzalloc(sizeof(struct dcn20_link_encoder), GFP_KERNEL);
 
@@ -1063,13 +941,6 @@ static const struct resource_create_funcs res_create_funcs = {
 		.create_hwseq = dcn302_hwseq_create,
 };
 
-static const struct resource_create_funcs res_create_maximus_funcs = {
-		.read_dce_straps = NULL,
-		.create_audio = NULL,
-		.create_stream_encoder = NULL,
-		.create_hwseq = dcn302_hwseq_create,
-};
-
 static bool is_soc_bounding_box_valid(struct dc *dc)
 {
 	uint32_t hw_internal_rev = dc->ctx->asic_id.hw_internal_rev;
@@ -1088,14 +959,29 @@ static bool init_soc_bounding_box(struct dc *dc,  struct resource_pool *pool)
 	DC_LOGGER_INIT(dc->ctx->logger);
 
 	if (!is_soc_bounding_box_valid(dc)) {
-		DC_LOG_ERROR("%s: not valid soc bounding box/n", __func__);
+		DC_LOG_ERROR("%s: not valid soc bounding box\n", __func__);
 		return false;
 	}
 
 	loaded_ip->max_num_otg = pool->pipe_count;
 	loaded_ip->max_num_dpp = pool->pipe_count;
 	loaded_ip->clamp_min_dcfclk = dc->config.clamp_min_dcfclk;
+	DC_FP_START();
 	dcn20_patch_bounding_box(dc, loaded_bb);
+	DC_FP_END();
+
+	if (dc->ctx->dc_bios->funcs->get_soc_bb_info) {
+		struct bp_soc_bb_info bb_info = { 0 };
+
+		if (dc->ctx->dc_bios->funcs->get_soc_bb_info(
+			    dc->ctx->dc_bios, &bb_info) == BP_RESULT_OK) {
+
+				DC_FP_START();
+				dcn302_fpu_init_soc_bounding_box(bb_info);
+				DC_FP_END();
+		}
+	}
+
 	return true;
 }
 
@@ -1213,8 +1099,17 @@ static void dcn302_resource_destruct(struct resource_pool *pool)
 			dce_abm_destroy(&pool->multiple_abms[i]);
 	}
 
+	if (pool->psr != NULL)
+		dmub_psr_destroy(&pool->psr);
+
 	if (pool->dccg != NULL)
 		dcn_dccg_destroy(&pool->dccg);
+
+	if (pool->oem_device != NULL) {
+		struct dc *dc = pool->oem_device->ctx->dc;
+
+		dc->link_srv->destroy_ddc_service(&pool->oem_device);
+	}
 }
 
 static void dcn302_destroy_resource_pool(struct resource_pool **pool)
@@ -1224,14 +1119,28 @@ static void dcn302_destroy_resource_pool(struct resource_pool **pool)
 	*pool = NULL;
 }
 
+void dcn302_update_bw_bounding_box(struct dc *dc, struct clk_bw_params *bw_params)
+{
+	DC_FP_START();
+	dcn302_fpu_update_bw_bounding_box(dc, bw_params);
+	DC_FP_END();
+}
+
+static void dcn302_get_panel_config_defaults(struct dc_panel_config *panel_config)
+{
+	*panel_config = panel_config_defaults;
+}
+
 static struct resource_funcs dcn302_res_pool_funcs = {
 		.destroy = dcn302_destroy_resource_pool,
 		.link_enc_create = dcn302_link_encoder_create,
 		.panel_cntl_create = dcn302_panel_cntl_create,
 		.validate_bandwidth = dcn30_validate_bandwidth,
 		.calculate_wm_and_dlg = dcn30_calculate_wm_and_dlg,
+		.update_soc_for_wm_a = dcn30_update_soc_for_wm_a,
 		.populate_dml_pipes = dcn30_populate_dml_pipes_from_context,
-		.acquire_idle_pipe_for_layer = dcn20_acquire_idle_pipe_for_layer,
+		.acquire_free_pipe_as_secondary_dpp_pipe = dcn20_acquire_free_pipe_for_layer,
+		.release_pipe = dcn20_release_pipe,
 		.add_stream_to_ctx = dcn30_add_stream_to_ctx,
 		.add_dsc_to_stream_resource = dcn20_add_dsc_to_stream_resource,
 		.remove_stream_from_ctx = dcn20_remove_stream_from_ctx,
@@ -1240,8 +1149,9 @@ static struct resource_funcs dcn302_res_pool_funcs = {
 		.find_first_free_match_stream_enc_for_link = dcn10_find_first_free_match_stream_enc_for_link,
 		.acquire_post_bldn_3dlut = dcn30_acquire_post_bldn_3dlut,
 		.release_post_bldn_3dlut = dcn30_release_post_bldn_3dlut,
-		.update_bw_bounding_box = dcn30_update_bw_bounding_box,
+		.update_bw_bounding_box = dcn302_update_bw_bounding_box,
 		.patch_unknown_plane_state = dcn20_patch_unknown_plane_state,
+		.get_panel_config_defaults = dcn302_get_panel_config_defaults,
 };
 
 static struct dc_cap_funcs cap_funcs = {
@@ -1266,7 +1176,7 @@ static const struct dccg_mask dccg_mask = {
 };
 
 #define abm_regs(id)\
-		[id] = { ABM_DCN301_REG_LIST(id) }
+		[id] = { ABM_DCN302_REG_LIST(id) }
 
 static const struct dce_abm_registers abm_regs[] = {
 		abm_regs(0),
@@ -1292,6 +1202,7 @@ static bool dcn302_resource_construct(
 	int i;
 	struct dc_context *ctx = dc->ctx;
 	struct irq_service_init_data init_data;
+	struct ddc_service_init_data ddc_init_data = {0};
 
 	ctx->dc_bios->regs = &bios_regs;
 
@@ -1311,12 +1222,18 @@ static bool dcn302_resource_construct(
 	dc->caps.max_cursor_size = 256;
 	dc->caps.min_horizontal_blanking_period = 80;
 	dc->caps.dmdata_alloc_size = 2048;
-
-	dc->caps.max_slave_planes = 1;
+	dc->caps.mall_size_per_mem_channel = 4;
+	/* total size = mall per channel * num channels * 1024 * 1024 */
+	dc->caps.mall_size_total = dc->caps.mall_size_per_mem_channel * dc->ctx->dc_bios->vram_info.num_chans * 1048576;
+	dc->caps.cursor_cache_size = dc->caps.max_cursor_size * dc->caps.max_cursor_size * 8;
+	dc->caps.max_slave_planes = 2;
+	dc->caps.max_slave_yuv_planes = 2;
+	dc->caps.max_slave_rgb_planes = 2;
 	dc->caps.post_blend_color_processing = true;
 	dc->caps.force_dp_tps4_for_cp2520 = true;
 	dc->caps.extended_aux_timeout_support = true;
 	dc->caps.dmcub_support = true;
+	dc->caps.max_v_total = (1 << 15) - 1;
 
 	/* Color pipeline capabilities */
 	dc->caps.color.dpp.dcn_arch = 1;
@@ -1352,12 +1269,28 @@ static bool dcn302_resource_construct(
 	dc->caps.color.mpc.ogam_rom_caps.hlg = 0;
 	dc->caps.color.mpc.ocsc = 1;
 
+	dc->caps.dp_hdmi21_pcon_support = true;
+
+	/* read VBIOS LTTPR caps */
+	if (ctx->dc_bios->funcs->get_lttpr_caps) {
+		enum bp_result bp_query_result;
+		uint8_t is_vbios_lttpr_enable = 0;
+
+		bp_query_result = ctx->dc_bios->funcs->get_lttpr_caps(ctx->dc_bios, &is_vbios_lttpr_enable);
+		dc->caps.vbios_lttpr_enable = (bp_query_result == BP_RESULT_OK) && !!is_vbios_lttpr_enable;
+	}
+
+	if (ctx->dc_bios->funcs->get_lttpr_interop) {
+		enum bp_result bp_query_result;
+		uint8_t is_vbios_interop_enabled = 0;
+
+		bp_query_result = ctx->dc_bios->funcs->get_lttpr_interop(ctx->dc_bios,
+				&is_vbios_interop_enabled);
+		dc->caps.vbios_lttpr_aware = (bp_query_result == BP_RESULT_OK) && !!is_vbios_interop_enabled;
+	}
+
 	if (dc->ctx->dce_environment == DCE_ENV_PRODUCTION_DRV)
 		dc->debug = debug_defaults_drv;
-	else if (dc->ctx->dce_environment == DCE_ENV_FPGA_MAXIMUS)
-		dc->debug = debug_defaults_diags;
-	else
-		dc->debug = debug_defaults_diags;
 
 	// Init the vm_helper
 	if (dc->vm_helper)
@@ -1469,6 +1402,14 @@ static bool dcn302_resource_construct(
 	}
 	pool->timing_generator_count = i;
 
+	/* PSR */
+	pool->psr = dmub_psr_create(ctx);
+	if (pool->psr == NULL) {
+		dm_error("DC: failed to create psr!\n");
+		BREAK_TO_DEBUGGER();
+		goto create_fail;
+	}
+
 	/* ABMs */
 	for (i = 0; i < pool->res_cap->num_timing_generator; i++) {
 		pool->multiple_abms[i] = dmub_abm_create(ctx, &abm_regs[i], &abm_shift, &abm_mask);
@@ -1528,8 +1469,7 @@ static bool dcn302_resource_construct(
 
 	/* Audio, Stream Encoders including HPO and virtual, MPC 3D LUTs */
 	if (!resource_construct(num_virtual_links, dc, pool,
-			(!IS_FPGA_MAXIMUS_DC(dc->ctx->dce_environment) ?
-					&res_create_funcs : &res_create_maximus_funcs)))
+			&res_create_funcs))
 		goto create_fail;
 
 	/* HW Sequencer and Plane caps */
@@ -1541,6 +1481,17 @@ static bool dcn302_resource_construct(
 		dc->caps.planes[i] = plane_cap;
 
 	dc->cap_funcs = cap_funcs;
+
+	if (dc->ctx->dc_bios->fw_info.oem_i2c_present) {
+		ddc_init_data.ctx = dc->ctx;
+		ddc_init_data.link = NULL;
+		ddc_init_data.id.id = dc->ctx->dc_bios->fw_info.oem_i2c_obj_id;
+		ddc_init_data.id.enum_id = 0;
+		ddc_init_data.id.type = OBJECT_TYPE_GENERIC;
+		pool->oem_device = dc->link_srv->create_ddc_service(&ddc_init_data);
+	} else {
+		pool->oem_device = NULL;
+	}
 
 	return true;
 

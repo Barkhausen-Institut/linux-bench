@@ -30,6 +30,7 @@
 #include <linux/types.h>
 #include <linux/gfp.h>
 #include <linux/err.h>
+#include <linux/of.h>
 #include <linux/regulator/consumer.h>
 
 #include <linux/iio/iio.h>
@@ -231,13 +232,7 @@ static const struct iio_chan_spec twl4030_madc_iio_channels[] = {
 
 static struct twl4030_madc_data *twl4030_madc;
 
-struct twl4030_prescale_divider_ratios {
-	s16 numerator;
-	s16 denominator;
-};
-
-static const struct twl4030_prescale_divider_ratios
-twl4030_divider_ratios[16] = {
+static const struct s16_fract twl4030_divider_ratios[16] = {
 	{1, 1},		/* CHANNEL 0 No Prescaler */
 	{1, 1},		/* CHANNEL 1 No Prescaler */
 	{6, 10},	/* CHANNEL 2 */
@@ -255,7 +250,6 @@ twl4030_divider_ratios[16] = {
 	{1, 1},		/* CHANNEL 14 Reseved channels */
 	{5, 11},	/* CHANNEL 15 */
 };
-
 
 /* Conversion table from -3 to 55 degrees Celcius */
 static int twl4030_therm_tbl[] = {
@@ -898,7 +892,7 @@ err_current_generator:
 	return ret;
 }
 
-static int twl4030_madc_remove(struct platform_device *pdev)
+static void twl4030_madc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *iio_dev = platform_get_drvdata(pdev);
 	struct twl4030_madc_data *madc = iio_priv(iio_dev);
@@ -909,8 +903,6 @@ static int twl4030_madc_remove(struct platform_device *pdev)
 	twl4030_madc_set_power(madc, 0);
 
 	regulator_disable(madc->usb3v1);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -923,7 +915,7 @@ MODULE_DEVICE_TABLE(of, twl_madc_of_match);
 
 static struct platform_driver twl4030_madc_driver = {
 	.probe = twl4030_madc_probe,
-	.remove = twl4030_madc_remove,
+	.remove_new = twl4030_madc_remove,
 	.driver = {
 		   .name = "twl4030_madc",
 		   .of_match_table = of_match_ptr(twl_madc_of_match),

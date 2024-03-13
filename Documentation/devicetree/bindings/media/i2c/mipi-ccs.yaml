@@ -71,23 +71,22 @@ properties:
     enum: [ 0, 180 ]
 
   port:
-    type: object
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    additionalProperties: false
+
     properties:
       endpoint:
-        type: object
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
         properties:
-          link-frequencies:
-            $ref: /schemas/types.yaml#/definitions/uint64-array
-            description: List of allowed data link frequencies.
-          data-lanes:
-            minItems: 1
-            maxItems: 8
+          link-frequencies: true
+          data-lanes: true
           bus-type:
-            description: The type of the data bus.
-            oneOf:
-              - const: 1 # CSI-2 C-PHY
-              - const: 3 # CCP2
-              - const: 4 # CSI-2 D-PHY
+            enum:
+              - 1 # CSI-2 C-PHY
+              - 3 # CCP2
+              - 4 # CSI-2 D-PHY
 
         required:
           - link-frequencies
@@ -105,8 +104,9 @@ additionalProperties: false
 examples:
   - |
     #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/media/video-interfaces.h>
 
-    i2c2 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 
@@ -125,7 +125,7 @@ examples:
                     remote-endpoint = <&csi2a_ep>;
                     link-frequencies = /bits/ 64 <199200000 210000000
                                                   499200000>;
-                    bus-type = <4>;
+                    bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
                 };
             };
         };

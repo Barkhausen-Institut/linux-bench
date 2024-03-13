@@ -2,7 +2,6 @@
 #ifndef __Q6_ASM_H__
 #define __Q6_ASM_H__
 #include "q6dsp-common.h"
-#include <dt-bindings/sound/qcom,q6asm.h>
 
 /* ASM client callback events */
 #define CMD_PAUSE			0x0001
@@ -97,7 +96,7 @@ struct audio_client *q6asm_audio_client_alloc(struct device *dev,
 					      int session_id, int perf_mode);
 void q6asm_audio_client_free(struct audio_client *ac);
 int q6asm_write_async(struct audio_client *ac, uint32_t stream_id, uint32_t len,
-		      uint32_t msw_ts, uint32_t lsw_ts, uint32_t flags);
+		      uint32_t msw_ts, uint32_t lsw_ts, uint32_t wflags);
 int q6asm_open_write(struct audio_client *ac, uint32_t stream_id,
 		     uint32_t format, u32 codec_profile,
 		     uint16_t bits_per_sample, bool is_gapless);
@@ -143,10 +142,10 @@ int q6asm_stream_remove_trailing_silence(struct audio_client *ac,
 					 uint32_t trailing_samples);
 int q6asm_cmd(struct audio_client *ac, uint32_t stream_id,  int cmd);
 int q6asm_cmd_nowait(struct audio_client *ac, uint32_t stream_id,  int cmd);
-int q6asm_get_session_id(struct audio_client *ac);
+int q6asm_get_session_id(struct audio_client *c);
 int q6asm_map_memory_regions(unsigned int dir,
 			     struct audio_client *ac,
 			     phys_addr_t phys,
-			     size_t bufsz, unsigned int bufcnt);
+			     size_t period_sz, unsigned int periods);
 int q6asm_unmap_memory_regions(unsigned int dir, struct audio_client *ac);
 #endif /* __Q6_ASM_H__ */

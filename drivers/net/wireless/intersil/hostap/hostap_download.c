@@ -227,7 +227,7 @@ static int prism2_download_aux_dump_proc_open(struct inode *inode, struct file *
 				   sizeof(struct prism2_download_aux_dump));
 	if (ret == 0) {
 		struct seq_file *m = file->private_data;
-		m->private = PDE_DATA(inode);
+		m->private = pde_data(inode);
 	}
 	return ret;
 }
@@ -732,8 +732,7 @@ static int prism2_download(local_info_t *local,
 		goto out;
 	}
 
-	dl = kzalloc(sizeof(*dl) + param->num_areas *
-		     sizeof(struct prism2_download_data_area), GFP_KERNEL);
+	dl = kzalloc(struct_size(dl, data, param->num_areas), GFP_KERNEL);
 	if (dl == NULL) {
 		ret = -ENOMEM;
 		goto out;

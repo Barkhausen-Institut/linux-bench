@@ -4,10 +4,10 @@
 //
 // Copyright 2020 The Linux Foundation. All rights reserved.
 
+#include <linux/acpi.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
-#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -88,14 +88,14 @@ static const struct snd_soc_component_driver rt1015p_component_driver = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static struct snd_soc_dai_driver rt1015p_dai_driver = {
 	.name = "HiFi",
 	.playback = {
 		.stream_name	= "HiFi Playback",
-		.formats	= SNDRV_PCM_FMTBIT_S24,
+		.formats	= SNDRV_PCM_FMTBIT_S24 |
+					SNDRV_PCM_FMTBIT_S32,
 		.rates		= SNDRV_PCM_RATE_48000,
 		.channels_min	= 1,
 		.channels_max	= 2,
@@ -125,15 +125,26 @@ static int rt1015p_platform_probe(struct platform_device *pdev)
 #ifdef CONFIG_OF
 static const struct of_device_id rt1015p_device_id[] = {
 	{ .compatible = "realtek,rt1015p" },
+	{ .compatible = "realtek,rt1019p" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, rt1015p_device_id);
+#endif
+
+#ifdef CONFIG_ACPI
+static const struct acpi_device_id rt1015p_acpi_match[] = {
+	{ "RTL1015", 0},
+	{ "RTL1019", 0},
+	{ },
+};
+MODULE_DEVICE_TABLE(acpi, rt1015p_acpi_match);
 #endif
 
 static struct platform_driver rt1015p_platform_driver = {
 	.driver = {
 		.name = "rt1015p",
 		.of_match_table = of_match_ptr(rt1015p_device_id),
+		.acpi_match_table = ACPI_PTR(rt1015p_acpi_match),
 	},
 	.probe = rt1015p_platform_probe,
 };

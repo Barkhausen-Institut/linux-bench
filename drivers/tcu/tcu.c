@@ -424,7 +424,7 @@ static dev_t create_tcu_dev(struct tcu_device *tcu, struct platform_device *pdev
         goto error_add;
     }
 
-    tcu->dev_class = class_create(THIS_MODULE, "tcu");
+    tcu->dev_class = class_create("tcu");
     if(IS_ERR(tcu->dev_class)) {
         tculog(LOG_ERR, dev, "failed to create device class for TCU device\n");
         goto error_add;

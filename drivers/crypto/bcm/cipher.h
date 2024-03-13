@@ -231,7 +231,7 @@ struct iproc_ctx_s {
 
 	/*
 	 * shash descriptor - needed to perform incremental hashing in
-	 * in software, when hw doesn't support it.
+	 * software, when hw doesn't support it.
 	 */
 	struct shash_desc *shash;
 
@@ -339,15 +339,12 @@ struct iproc_reqctx_s {
 	/* hmac context */
 	bool is_sw_hmac;
 
-	/* aead context */
-	struct crypto_tfm *old_tfm;
-	crypto_completion_t old_complete;
-	void *old_data;
-
 	gfp_t gfp;
 
 	/* Buffers used to build SPU request and response messages */
 	struct spu_msg_buf msg_buf;
+
+	struct aead_request req;
 };
 
 /*
@@ -420,7 +417,7 @@ struct spu_hw {
 	u32 num_chan;
 };
 
-struct device_private {
+struct bcm_device_private {
 	struct platform_device *pdev;
 
 	struct spu_hw spu;
@@ -467,6 +464,6 @@ struct device_private {
 	struct mbox_chan **mbox;
 };
 
-extern struct device_private iproc_priv;
+extern struct bcm_device_private iproc_priv;
 
 #endif

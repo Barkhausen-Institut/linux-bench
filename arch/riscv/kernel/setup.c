@@ -8,21 +8,27 @@
  *  Nick Kossifidis <mick@ics.forth.gr>
  */
 
+#include <linux/acpi.h>
+#include <linux/cpu.h>
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/memblock.h>
 #include <linux/sched.h>
 #include <linux/console.h>
-#include <linux/screen_info.h>
 #include <linux/of_fdt.h>
-#include <linux/of_platform.h>
 #include <linux/sched/task.h>
-#include <linux/swiotlb.h>
 #include <linux/smp.h>
 #include <linux/efi.h>
+#include <linux/crash_dump.h>
+#include <linux/panic_notifier.h>
 
+#include <asm/acpi.h>
+#include <asm/alternative.h>
+#include <asm/cacheflush.h>
+#include <asm/cpufeature.h>
 #include <asm/cpu_ops.h>
 #include <asm/early_ioremap.h>
+#include <asm/pgtable.h>
 #include <asm/setup.h>
 #include <asm/set_memory.h>
 #include <asm/sections.h>
@@ -34,23 +40,16 @@
 
 #include "head.h"
 
-#if defined(CONFIG_DUMMY_CONSOLE) || defined(CONFIG_EFI)
-struct screen_info screen_info __section(".data") = {
-	.orig_video_lines	= 30,
-	.orig_video_cols	= 80,
-	.orig_video_mode	= 0,
-	.orig_video_ega_bx	= 0,
-	.orig_video_isVGA	= 1,
-	.orig_video_points	= 8
-};
-#endif
-
 /*
  * The lucky hart to first increment this variable will boot the other cores.
  * This is used before the kernel initializes the BSS so it can't be in the
  * BSS.
  */
-atomic_t hart_lottery __section(".sdata");
+atomic_t hart_lottery __section(".sdata")
+#ifdef CONFIG_XIP_KERNEL
+= ATOMIC_INIT(0xC001BEEF)
+#endif
+;
 unsigned long boot_cpu_hartid;
 static DEFINE_PER_CPU(struct cpu, cpu_devices);
 
@@ -60,10 +59,14 @@ static DEFINE_PER_CPU(struct cpu, cpu_devices);
  * also add "System RAM" regions for compatibility with other
  * archs, and the rest of the known regions for completeness.
  */
+static struct resource kimage_res = { .name = "Kernel image", };
 static struct resource code_res = { .name = "Kernel code", };
 static struct resource data_res = { .name = "Kernel data", };
 static struct resource rodata_res = { .name = "Kernel rodata", };
 static struct resource bss_res = { .name = "Kernel bss", };
+#ifdef CONFIG_CRASH_DUMP
+static struct resource elfcorehdr_res = { .name = "ELF Core hdr", };
+#endif
 
 static int __init add_resource(struct resource *parent,
 				struct resource *res)
@@ -80,56 +83,16 @@ static int __init add_resource(struct resource *parent,
 	return 1;
 }
 
-static int __init add_kernel_resources(struct resource *res)
+static int __init add_kernel_resources(void)
 {
 	int ret = 0;
 
 	/*
 	 * The memory region of the kernel image is continuous and
-	 * was reserved on setup_bootmem, find it here and register
-	 * it as a resource, then register the various segments of
-	 * the image as child nodes
+	 * was reserved on setup_bootmem, register it here as a
+	 * resource, with the various segments of the image as
+	 * child nodes.
 	 */
-	if (!(res->start <= code_res.start && res->end >= data_res.end))
-		return 0;
-
-	res->name = "Kernel image";
-	res->flags = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
-
-	/*
-	 * We removed a part of this region on setup_bootmem so
-	 * we need to expand the resource for the bss to fit in.
-	 */
-	res->end = bss_res.end;
-
-	ret = add_resource(&iomem_resource, res);
-	if (ret < 0)
-		return ret;
-
-	ret = add_resource(res, &code_res);
-	if (ret < 0)
-		return ret;
-
-	ret = add_resource(res, &rodata_res);
-	if (ret < 0)
-		return ret;
-
-	ret = add_resource(res, &data_res);
-	if (ret < 0)
-		return ret;
-
-	ret = add_resource(res, &bss_res);
-
-	return ret;
-}
-
-static void __init init_resources(void)
-{
-	struct memblock_region *region = NULL;
-	struct resource *res = NULL;
-	struct resource *mem_res = NULL;
-	size_t mem_res_sz = 0;
-	int ret = 0, i = 0;
 
 	code_res.start = __pa_symbol(_text);
 	code_res.end = __pa_symbol(_etext) - 1;
@@ -147,35 +110,82 @@ static void __init init_resources(void)
 	bss_res.end = __pa_symbol(__bss_stop) - 1;
 	bss_res.flags = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
 
-	mem_res_sz = (memblock.memory.cnt + memblock.reserved.cnt) * sizeof(*mem_res);
+	kimage_res.start = code_res.start;
+	kimage_res.end = bss_res.end;
+	kimage_res.flags = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
+
+	ret = add_resource(&iomem_resource, &kimage_res);
+	if (ret < 0)
+		return ret;
+
+	ret = add_resource(&kimage_res, &code_res);
+	if (ret < 0)
+		return ret;
+
+	ret = add_resource(&kimage_res, &rodata_res);
+	if (ret < 0)
+		return ret;
+
+	ret = add_resource(&kimage_res, &data_res);
+	if (ret < 0)
+		return ret;
+
+	ret = add_resource(&kimage_res, &bss_res);
+
+	return ret;
+}
+
+static void __init init_resources(void)
+{
+	struct memblock_region *region = NULL;
+	struct resource *res = NULL;
+	struct resource *mem_res = NULL;
+	size_t mem_res_sz = 0;
+	int num_resources = 0, res_idx = 0;
+	int ret = 0;
+
+	/* + 1 as memblock_alloc() might increase memblock.reserved.cnt */
+	num_resources = memblock.memory.cnt + memblock.reserved.cnt + 1;
+	res_idx = num_resources - 1;
+
+	mem_res_sz = num_resources * sizeof(*mem_res);
 	mem_res = memblock_alloc(mem_res_sz, SMP_CACHE_BYTES);
 	if (!mem_res)
 		panic("%s: Failed to allocate %zu bytes\n", __func__, mem_res_sz);
+
 	/*
 	 * Start by adding the reserved regions, if they overlap
 	 * with /memory regions, insert_resource later on will take
 	 * care of it.
 	 */
+	ret = add_kernel_resources();
+	if (ret < 0)
+		goto error;
+
+#ifdef CONFIG_CRASH_DUMP
+	if (elfcorehdr_size > 0) {
+		elfcorehdr_res.start = elfcorehdr_addr;
+		elfcorehdr_res.end = elfcorehdr_addr + elfcorehdr_size - 1;
+		elfcorehdr_res.flags = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
+		add_resource(&iomem_resource, &elfcorehdr_res);
+	}
+#endif
+
 	for_each_reserved_mem_region(region) {
-		res = &mem_res[i++];
+		res = &mem_res[res_idx--];
 
 		res->name = "Reserved";
-		res->flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+		res->flags = IORESOURCE_MEM | IORESOURCE_EXCLUSIVE;
 		res->start = __pfn_to_phys(memblock_region_reserved_base_pfn(region));
 		res->end = __pfn_to_phys(memblock_region_reserved_end_pfn(region)) - 1;
-
-		ret = add_kernel_resources(res);
-		if (ret < 0)
-			goto error;
-		else if (ret)
-			continue;
 
 		/*
 		 * Ignore any other reserved regions within
 		 * system memory.
 		 */
 		if (memblock_is_memory(res->start)) {
-			memblock_free((phys_addr_t) res, sizeof(struct resource));
+			/* Re-use this pre-allocated resource */
+			res_idx++;
 			continue;
 		}
 
@@ -186,11 +196,11 @@ static void __init init_resources(void)
 
 	/* Add /memory regions to the resource tree */
 	for_each_mem_region(region) {
-		res = &mem_res[i++];
+		res = &mem_res[res_idx--];
 
 		if (unlikely(memblock_is_nomap(region))) {
 			res->name = "Reserved";
-			res->flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+			res->flags = IORESOURCE_MEM | IORESOURCE_EXCLUSIVE;
 		} else {
 			res->name = "System RAM";
 			res->flags = IORESOURCE_SYSTEM_RAM | IORESOURCE_BUSY;
@@ -204,63 +214,66 @@ static void __init init_resources(void)
 			goto error;
 	}
 
+	/* Clean-up any unused pre-allocated resources */
+	if (res_idx >= 0)
+		memblock_free(mem_res, (res_idx + 1) * sizeof(*mem_res));
 	return;
 
  error:
 	/* Better an empty resource tree than an inconsistent one */
 	release_child_resources(&iomem_resource);
-	memblock_free((phys_addr_t) mem_res, mem_res_sz);
+	memblock_free(mem_res, mem_res_sz);
 }
 
 
 static void __init parse_dtb(void)
 {
 	/* Early scan of device tree from init memory */
-	if (early_init_dt_scan(dtb_early_va))
-		return;
+	if (early_init_dt_scan(dtb_early_va)) {
+		const char *name = of_flat_dt_get_machine_name();
 
-	pr_err("No DTB passed to the kernel\n");
+		if (name) {
+			pr_info("Machine model: %s\n", name);
+			dump_stack_set_arch_desc("%s (DT)", name);
+		}
+	} else {
+		pr_err("No DTB passed to the kernel\n");
+	}
+
 #ifdef CONFIG_CMDLINE_FORCE
-	strlcpy(boot_command_line, CONFIG_CMDLINE, COMMAND_LINE_SIZE);
+	strscpy(boot_command_line, CONFIG_CMDLINE, COMMAND_LINE_SIZE);
 	pr_info("Forcing kernel command line to: %s\n", boot_command_line);
 #endif
 }
 
+extern void __init init_rt_signal_env(void);
+
 void __init setup_arch(char **cmdline_p)
 {
 	parse_dtb();
-	init_mm.start_code = (unsigned long) _stext;
-	init_mm.end_code   = (unsigned long) _etext;
-	init_mm.end_data   = (unsigned long) _edata;
-	init_mm.brk        = (unsigned long) _end;
+	setup_initial_init_mm(_stext, _etext, _edata, _end);
 
 	*cmdline_p = boot_command_line;
 
 	early_ioremap_setup();
+	sbi_init();
 	jump_label_init();
 	parse_early_param();
 
 	efi_init();
-	setup_bootmem();
 	paging_init();
-	init_resources();
+
+	/* Parse the ACPI tables for possible boot-time configuration */
+	acpi_boot_table_init();
+
 #if IS_ENABLED(CONFIG_BUILTIN_DTB)
 	unflatten_and_copy_device_tree();
 #else
-	if (early_init_dt_verify(__va(dtb_early_pa)))
-		unflatten_device_tree();
-	else
-		pr_err("No DTB found in kernel mappings\n");
+	unflatten_device_tree();
 #endif
+	misc_mem_init();
 
-	if (IS_ENABLED(CONFIG_RISCV_SBI))
-		sbi_init();
-
-	if (IS_ENABLED(CONFIG_STRICT_KERNEL_RWX))
-		protect_kernel_text_data();
-#ifdef CONFIG_SWIOTLB
-	swiotlb_init(1);
-#endif
+	init_resources();
 
 #ifdef CONFIG_KASAN
 	kasan_init();
@@ -270,18 +283,34 @@ void __init setup_arch(char **cmdline_p)
 	setup_smp();
 #endif
 
+	if (!acpi_disabled)
+		acpi_init_rintc_map();
+
+	riscv_init_cbo_blocksizes();
 	riscv_fill_hwcap();
+	init_rt_signal_env();
+	apply_boot_alternatives();
+
+	if (IS_ENABLED(CONFIG_RISCV_ISA_ZICBOM) &&
+	    riscv_isa_extension_available(NULL, ZICBOM))
+		riscv_noncoherent_supported();
+	riscv_set_dma_cache_alignment();
+
+	riscv_user_isa_enable();
 }
 
 static int __init topology_init(void)
 {
-	int i;
+	int i, ret;
 
 	for_each_possible_cpu(i) {
 		struct cpu *cpu = &per_cpu(cpu_devices, i);
 
 		cpu->hotpluggable = cpu_has_hotplug(i);
-		register_cpu(cpu, i);
+		ret = register_cpu(cpu, i);
+		if (unlikely(ret))
+			pr_warn("Warning: %s: register_cpu %d failed (%d)\n",
+			       __func__, i, ret);
 	}
 
 	return 0;
@@ -290,11 +319,35 @@ subsys_initcall(topology_init);
 
 void free_initmem(void)
 {
-	unsigned long init_begin = (unsigned long)__init_begin;
-	unsigned long init_end = (unsigned long)__init_end;
-
-	if (IS_ENABLED(CONFIG_STRICT_KERNEL_RWX))
-		set_memory_rw_nx(init_begin, (init_end - init_begin) >> PAGE_SHIFT);
+	if (IS_ENABLED(CONFIG_STRICT_KERNEL_RWX)) {
+		set_kernel_memory(lm_alias(__init_begin), lm_alias(__init_end), set_memory_rw_nx);
+		if (IS_ENABLED(CONFIG_64BIT))
+			set_kernel_memory(__init_begin, __init_end, set_memory_nx);
+	}
 
 	free_initmem_default(POISON_FREE_INITMEM);
 }
+
+static int dump_kernel_offset(struct notifier_block *self,
+			      unsigned long v, void *p)
+{
+	pr_emerg("Kernel Offset: 0x%lx from 0x%lx\n",
+		 kernel_map.virt_offset,
+		 KERNEL_LINK_ADDR);
+
+	return 0;
+}
+
+static struct notifier_block kernel_offset_notifier = {
+	.notifier_call = dump_kernel_offset
+};
+
+static int __init register_kernel_offset_dumper(void)
+{
+	if (IS_ENABLED(CONFIG_RANDOMIZE_BASE))
+		atomic_notifier_chain_register(&panic_notifier_list,
+					       &kernel_offset_notifier);
+
+	return 0;
+}
+device_initcall(register_kernel_offset_dumper);

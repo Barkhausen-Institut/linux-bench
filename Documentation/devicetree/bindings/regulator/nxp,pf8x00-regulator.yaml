@@ -38,12 +38,6 @@ properties:
         description:
           Properties for single LDO regulator.
 
-        properties:
-          regulator-name:
-            pattern: "^ldo[1-4]$"
-            description:
-              should be "ldo1", ..., "ldo4"
-
         unevaluatedProperties: false
 
       "^buck[1-7]$":
@@ -53,17 +47,15 @@ properties:
           Properties for single BUCK regulator.
 
         properties:
-          regulator-name:
-            pattern: "^buck[1-7]$"
-            description:
-              should be "buck1", ..., "buck7"
-
           nxp,ilim-ma:
-            $ref: "/schemas/types.yaml#/definitions/uint32"
+            $ref: /schemas/types.yaml#/definitions/uint32
             minimum: 2100
             maximum: 4500
+            deprecated: true
             description:
               BUCK regulators current limit in mA.
+              This property is deprecated, please use
+              "regulator-max-microamp" instead.
 
               Listed current limits in mA are,
               2100 (default)
@@ -72,35 +64,20 @@ properties:
               4500
 
           nxp,phase-shift:
-            $ref: "/schemas/types.yaml#/definitions/uint32"
-            minimum: 45
-            maximum: 0
+            $ref: /schemas/types.yaml#/definitions/uint32
+            default: 0
+            enum: [ 0, 45, 90, 135, 180, 225, 270, 315 ]
             description:
               BUCK regulators phase shift control in degrees.
 
-              Listed phase shift control values in degrees are,
-              45
-              90
-              135
-              180
-              225
-              270
-              315
-              0 (default)
-
         unevaluatedProperties: false
 
-      "^vsnvs$":
+    properties:
+      vsnvs:
         type: object
         $ref: regulator.yaml#
         description:
           Properties for single VSNVS regulator.
-
-        properties:
-          regulator-name:
-            pattern: "^vsnvs$"
-            description:
-              should be "vsnvs"
 
         unevaluatedProperties: false
 
@@ -115,7 +92,7 @@ additionalProperties: false
 
 examples:
   - |
-    i2c1 {
+    i2c {
         #address-cells = <1>;
         #size-cells = <0>;
 

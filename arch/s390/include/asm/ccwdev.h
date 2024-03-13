@@ -15,6 +15,7 @@
 #include <asm/fcx.h>
 #include <asm/irq.h>
 #include <asm/schid.h>
+#include <linux/mutex.h>
 
 /* structs from asm/cio.h */
 struct irb;
@@ -87,6 +88,7 @@ struct ccw_device {
 	spinlock_t *ccwlock;
 /* private: */
 	struct ccw_device_private *private;	/* cio private information */
+	struct mutex reg_mutex;
 /* public: */
 	struct ccw_device_id id;
 	struct ccw_driver *drv;
@@ -152,9 +154,6 @@ extern struct ccw_device *get_ccwdev_by_busid(struct ccw_driver *cdrv,
  * when new devices for its type pop up */
 extern int  ccw_driver_register   (struct ccw_driver *driver);
 extern void ccw_driver_unregister (struct ccw_driver *driver);
-
-struct ccw1;
-
 extern int ccw_device_set_options_mask(struct ccw_device *, unsigned long);
 extern int ccw_device_set_options(struct ccw_device *, unsigned long);
 extern void ccw_device_clear_options(struct ccw_device *, unsigned long);
@@ -217,7 +216,6 @@ extern struct ccw_device *ccw_device_create_console(struct ccw_driver *);
 extern void ccw_device_destroy_console(struct ccw_device *);
 extern int ccw_device_enable_console(struct ccw_device *);
 extern void ccw_device_wait_idle(struct ccw_device *);
-extern int ccw_device_force_console(struct ccw_device *);
 
 extern void *ccw_device_dma_zalloc(struct ccw_device *cdev, size_t size);
 extern void ccw_device_dma_free(struct ccw_device *cdev,

@@ -38,6 +38,13 @@ struct bareudp_net {
 	struct list_head        bareudp_list;
 };
 
+struct bareudp_conf {
+	__be16 ethertype;
+	__be16 port;
+	u16 sport_min;
+	bool multi_proto_mode;
+};
+
 /* Pseudo network device */
 struct bareudp_dev {
 	struct net         *net;        /* netns for packet i/o */
@@ -71,12 +78,18 @@ static int bareudp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 		family = AF_INET6;
 
 	if (bareudp->ethertype == htons(ETH_P_IP)) {
-		struct iphdr *iphdr;
+		__u8 ipversion;
 
-		iphdr = (struct iphdr *)(skb->data + BAREUDP_BASE_HLEN);
-		if (iphdr->version == 4) {
-			proto = bareudp->ethertype;
-		} else if (bareudp->multi_proto_mode && (iphdr->version == 6)) {
+		if (skb_copy_bits(skb, BAREUDP_BASE_HLEN, &ipversion,
+				  sizeof(ipversion))) {
+			bareudp->dev->stats.rx_dropped++;
+			goto drop;
+		}
+		ipversion >>= 4;
+
+		if (ipversion == 4) {
+			proto = htons(ETH_P_IP);
+		} else if (ipversion == 6 && bareudp->multi_proto_mode) {
 			proto = htons(ETH_P_IPV6);
 		} else {
 			bareudp->dev->stats.rx_dropped++;
@@ -133,15 +146,16 @@ static int bareudp_udp_encap_recv(struct sock *sk, struct sk_buff *skb)
 	skb->dev = bareudp->dev;
 	oiph = skb_network_header(skb);
 	skb_reset_network_header(skb);
+	skb_reset_mac_header(skb);
 
-	if (!IS_ENABLED(CONFIG_IPV6) || family == AF_INET)
+	if (!ipv6_mod_enabled() || family == AF_INET)
 		err = IP_ECN_decapsulate(oiph, skb);
 	else
 		err = IP6_ECN_decapsulate(oiph, skb);
 
 	if (unlikely(err)) {
 		if (log_ecn_error) {
-			if  (!IS_ENABLED(CONFIG_IPV6) || family == AF_INET)
+			if  (!ipv6_mod_enabled() || family == AF_INET)
 				net_info_ratelimited("non-ECT from %pI4 "
 						     "with TOS=%#x\n",
 						     &((struct iphdr *)oiph)->saddr,
@@ -207,17 +221,19 @@ static struct socket *bareudp_create_sock(struct net *net, __be16 port)
 	int err;
 
 	memset(&udp_conf, 0, sizeof(udp_conf));
-#if IS_ENABLED(CONFIG_IPV6)
-	udp_conf.family = AF_INET6;
-#else
-	udp_conf.family = AF_INET;
-#endif
+
+	if (ipv6_mod_enabled())
+		udp_conf.family = AF_INET6;
+	else
+		udp_conf.family = AF_INET;
+
 	udp_conf.local_udp_port = port;
 	/* Open UDP socket */
 	err = udp_sock_create(net, &udp_conf, &sock);
 	if (err < 0)
 		return ERR_PTR(err);
 
+	udp_allow_gso(sock->sk);
 	return sock;
 }
 
@@ -239,12 +255,6 @@ static int bareudp_socket_create(struct bareudp_dev *bareudp, __be16 port)
 	tunnel_cfg.encap_err_lookup = bareudp_err_lookup;
 	tunnel_cfg.encap_destroy = NULL;
 	setup_udp_tunnel_sock(bareudp->net, sock, &tunnel_cfg);
-
-	/* As the setup_udp_tunnel_sock does not call udp_encap_enable if the
-	 * socket type is v6 an explicit call to udp_encap_enable is needed.
-	 */
-	if (sock->sk->sk_family == AF_INET6)
-		udp_encap_enable();
 
 	rcu_assign_pointer(bareudp->sock, sock);
 	return 0;
@@ -296,8 +306,13 @@ static int bareudp_xmit_skb(struct sk_buff *skb, struct net_device *dev,
 	if (!sock)
 		return -ESHUTDOWN;
 
-	rt = ip_route_output_tunnel(skb, dev, bareudp->net, &saddr, info,
-				    IPPROTO_UDP, use_cache);
+	sport = udp_flow_src_port(bareudp->net, skb,
+				  bareudp->sport_min, USHRT_MAX,
+				  true);
+	rt = udp_tunnel_dst_lookup(skb, dev, bareudp->net, 0, &saddr, &info->key,
+				   sport, bareudp->port, key->tos,
+				   use_cache ?
+				   (struct dst_cache *)&info->dst_cache : NULL);
 
 	if (IS_ERR(rt))
 		return PTR_ERR(rt);
@@ -305,9 +320,6 @@ static int bareudp_xmit_skb(struct sk_buff *skb, struct net_device *dev,
 	skb_tunnel_check_pmtu(skb, &rt->dst,
 			      BAREUDP_IPV4_HLEN + info->options_len, false);
 
-	sport = udp_flow_src_port(bareudp->net, skb,
-				  bareudp->sport_min, USHRT_MAX,
-				  true);
 	tos = ip_tunnel_ecn_encap(key->tos, ip_hdr(skb), skb);
 	ttl = key->ttl;
 	df = key->tun_flags & TUNNEL_DONT_FRAGMENT ? htons(IP_DF) : 0;
@@ -359,17 +371,19 @@ static int bareudp6_xmit_skb(struct sk_buff *skb, struct net_device *dev,
 	if (!sock)
 		return -ESHUTDOWN;
 
-	dst = ip6_dst_lookup_tunnel(skb, dev, bareudp->net, sock, &saddr, info,
-				    IPPROTO_UDP, use_cache);
+	sport = udp_flow_src_port(bareudp->net, skb,
+				  bareudp->sport_min, USHRT_MAX,
+				  true);
+	dst = udp_tunnel6_dst_lookup(skb, dev, bareudp->net, sock, 0, &saddr,
+				     key, sport, bareudp->port, key->tos,
+				     use_cache ?
+				     (struct dst_cache *) &info->dst_cache : NULL);
 	if (IS_ERR(dst))
 		return PTR_ERR(dst);
 
 	skb_tunnel_check_pmtu(skb, dst, BAREUDP_IPV6_HLEN + info->options_len,
 			      false);
 
-	sport = udp_flow_src_port(bareudp->net, skb,
-				  bareudp->sport_min, USHRT_MAX,
-				  true);
 	prio = ip_tunnel_ecn_encap(key->tos, ip_hdr(skb), skb);
 	ttl = key->ttl;
 
@@ -439,7 +453,7 @@ static netdev_tx_t bareudp_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	rcu_read_lock();
-	if (IS_ENABLED(CONFIG_IPV6) && info->mode & IP_TUNNEL_INFO_IPV6)
+	if (ipv6_mod_enabled() && info->mode & IP_TUNNEL_INFO_IPV6)
 		err = bareudp6_xmit_skb(skb, dev, bareudp, info);
 	else
 		err = bareudp_xmit_skb(skb, dev, bareudp, info);
@@ -466,15 +480,21 @@ static int bareudp_fill_metadata_dst(struct net_device *dev,
 	struct ip_tunnel_info *info = skb_tunnel_info(skb);
 	struct bareudp_dev *bareudp = netdev_priv(dev);
 	bool use_cache;
+	__be16 sport;
 
 	use_cache = ip_tunnel_dst_cache_usable(skb, info);
+	sport = udp_flow_src_port(bareudp->net, skb,
+				  bareudp->sport_min, USHRT_MAX,
+				  true);
 
-	if (!IS_ENABLED(CONFIG_IPV6) || ip_tunnel_info_af(info) == AF_INET) {
+	if (!ipv6_mod_enabled() || ip_tunnel_info_af(info) == AF_INET) {
 		struct rtable *rt;
 		__be32 saddr;
 
-		rt = ip_route_output_tunnel(skb, dev, bareudp->net, &saddr,
-					    info, IPPROTO_UDP, use_cache);
+		rt = udp_tunnel_dst_lookup(skb, dev, bareudp->net, 0, &saddr,
+					   &info->key, sport, bareudp->port,
+					   info->key.tos,
+					   use_cache ? &info->dst_cache : NULL);
 		if (IS_ERR(rt))
 			return PTR_ERR(rt);
 
@@ -485,9 +505,10 @@ static int bareudp_fill_metadata_dst(struct net_device *dev,
 		struct in6_addr saddr;
 		struct socket *sock = rcu_dereference(bareudp->sock);
 
-		dst = ip6_dst_lookup_tunnel(skb, dev, bareudp->net, sock,
-					    &saddr, info, IPPROTO_UDP,
-					    use_cache);
+		dst = udp_tunnel6_dst_lookup(skb, dev, bareudp->net, sock,
+					     0, &saddr, &info->key,
+					     sport, bareudp->port, info->key.tos,
+					     use_cache ? &info->dst_cache : NULL);
 		if (IS_ERR(dst))
 			return PTR_ERR(dst);
 
@@ -497,9 +518,7 @@ static int bareudp_fill_metadata_dst(struct net_device *dev,
 		return -EINVAL;
 	}
 
-	info->key.tp_src = udp_flow_src_port(bareudp->net, skb,
-					     bareudp->sport_min,
-			USHRT_MAX, true);
+	info->key.tp_src = sport;
 	info->key.tp_dst = bareudp->port;
 	return 0;
 }
@@ -532,11 +551,12 @@ static void bareudp_setup(struct net_device *dev)
 	dev->netdev_ops = &bareudp_netdev_ops;
 	dev->needs_free_netdev = true;
 	SET_NETDEV_DEVTYPE(dev, &bareudp_type);
-	dev->features    |= NETIF_F_SG | NETIF_F_HW_CSUM;
+	dev->features    |= NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_FRAGLIST;
 	dev->features    |= NETIF_F_RXCSUM;
 	dev->features    |= NETIF_F_LLTX;
 	dev->features    |= NETIF_F_GSO_SOFTWARE;
-	dev->hw_features |= NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_RXCSUM;
+	dev->hw_features |= NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_FRAGLIST;
+	dev->hw_features |= NETIF_F_RXCSUM;
 	dev->hw_features |= NETIF_F_GSO_SOFTWARE;
 	dev->hard_header_len = 0;
 	dev->addr_len = 0;
@@ -574,11 +594,8 @@ static int bareudp2info(struct nlattr *data[], struct bareudp_conf *conf,
 		return -EINVAL;
 	}
 
-	if (data[IFLA_BAREUDP_PORT])
-		conf->port =  nla_get_u16(data[IFLA_BAREUDP_PORT]);
-
-	if (data[IFLA_BAREUDP_ETHERTYPE])
-		conf->ethertype =  nla_get_u16(data[IFLA_BAREUDP_ETHERTYPE]);
+	conf->port = nla_get_u16(data[IFLA_BAREUDP_PORT]);
+	conf->ethertype = nla_get_u16(data[IFLA_BAREUDP_ETHERTYPE]);
 
 	if (data[IFLA_BAREUDP_SRCPORT_MIN])
 		conf->sport_min =  nla_get_u16(data[IFLA_BAREUDP_SRCPORT_MIN]);
@@ -602,7 +619,8 @@ static struct bareudp_dev *bareudp_find_dev(struct bareudp_net *bn,
 }
 
 static int bareudp_configure(struct net *net, struct net_device *dev,
-			     struct bareudp_conf *conf)
+			     struct bareudp_conf *conf,
+			     struct netlink_ext_ack *extack)
 {
 	struct bareudp_net *bn = net_generic(net, bareudp_net_id);
 	struct bareudp_dev *t, *bareudp = netdev_priv(dev);
@@ -611,13 +629,17 @@ static int bareudp_configure(struct net *net, struct net_device *dev,
 	bareudp->net = net;
 	bareudp->dev = dev;
 	t = bareudp_find_dev(bn, conf);
-	if (t)
+	if (t) {
+		NL_SET_ERR_MSG(extack, "Another bareudp device using the same port already exists");
 		return -EBUSY;
+	}
 
 	if (conf->multi_proto_mode &&
 	    (conf->ethertype != htons(ETH_P_MPLS_UC) &&
-	     conf->ethertype != htons(ETH_P_IP)))
+	     conf->ethertype != htons(ETH_P_IP))) {
+		NL_SET_ERR_MSG(extack, "Cannot set multiproto mode for this ethertype (only IPv4 and unicast MPLS are supported)");
 		return -EINVAL;
+	}
 
 	bareudp->port = conf->port;
 	bareudp->ethertype = conf->ethertype;
@@ -658,14 +680,13 @@ static int bareudp_newlink(struct net *net, struct net_device *dev,
 			   struct netlink_ext_ack *extack)
 {
 	struct bareudp_conf conf;
-	LIST_HEAD(list_kill);
 	int err;
 
 	err = bareudp2info(data, &conf, extack);
 	if (err)
 		return err;
 
-	err = bareudp_configure(net, dev, &conf);
+	err = bareudp_configure(net, dev, &conf, extack);
 	if (err)
 		return err;
 
@@ -676,8 +697,7 @@ static int bareudp_newlink(struct net *net, struct net_device *dev,
 	return 0;
 
 err_unconfig:
-	bareudp_dellink(dev, &list_kill);
-	unregister_netdevice_many(&list_kill);
+	bareudp_dellink(dev, NULL);
 	return err;
 }
 
@@ -722,42 +742,6 @@ static struct rtnl_link_ops bareudp_link_ops __read_mostly = {
 	.get_size       = bareudp_get_size,
 	.fill_info      = bareudp_fill_info,
 };
-
-struct net_device *bareudp_dev_create(struct net *net, const char *name,
-				      u8 name_assign_type,
-				      struct bareudp_conf *conf)
-{
-	struct nlattr *tb[IFLA_MAX + 1];
-	struct net_device *dev;
-	LIST_HEAD(list_kill);
-	int err;
-
-	memset(tb, 0, sizeof(tb));
-	dev = rtnl_create_link(net, name, name_assign_type,
-			       &bareudp_link_ops, tb, NULL);
-	if (IS_ERR(dev))
-		return dev;
-
-	err = bareudp_configure(net, dev, conf);
-	if (err) {
-		free_netdev(dev);
-		return ERR_PTR(err);
-	}
-	err = dev_set_mtu(dev, IP_MAX_MTU - BAREUDP_BASE_HLEN);
-	if (err)
-		goto err;
-
-	err = rtnl_configure_link(dev, NULL);
-	if (err < 0)
-		goto err;
-
-	return dev;
-err:
-	bareudp_dellink(dev, &list_kill);
-	unregister_netdevice_many(&list_kill);
-	return ERR_PTR(err);
-}
-EXPORT_SYMBOL_GPL(bareudp_dev_create);
 
 static __net_init int bareudp_init_net(struct net *net)
 {

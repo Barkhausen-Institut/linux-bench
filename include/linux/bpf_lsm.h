@@ -28,6 +28,7 @@ int bpf_lsm_verify_prog(struct bpf_verifier_log *vlog,
 			const struct bpf_prog *prog);
 
 bool bpf_lsm_is_sleepable_hook(u32 btf_id);
+bool bpf_lsm_is_trusted(const struct bpf_prog *prog);
 
 static inline struct bpf_storage_blob *bpf_inode(
 	const struct inode *inode)
@@ -38,25 +39,20 @@ static inline struct bpf_storage_blob *bpf_inode(
 	return inode->i_security + bpf_lsm_blob_sizes.lbs_inode;
 }
 
-static inline struct bpf_storage_blob *bpf_task(
-	const struct task_struct *task)
-{
-	if (unlikely(!task->security))
-		return NULL;
-
-	return task->security + bpf_lsm_blob_sizes.lbs_task;
-}
-
 extern const struct bpf_func_proto bpf_inode_storage_get_proto;
 extern const struct bpf_func_proto bpf_inode_storage_delete_proto;
-extern const struct bpf_func_proto bpf_task_storage_get_proto;
-extern const struct bpf_func_proto bpf_task_storage_delete_proto;
 void bpf_inode_storage_free(struct inode *inode);
-void bpf_task_storage_free(struct task_struct *task);
+
+void bpf_lsm_find_cgroup_shim(const struct bpf_prog *prog, bpf_func_t *bpf_func);
 
 #else /* !CONFIG_BPF_LSM */
 
 static inline bool bpf_lsm_is_sleepable_hook(u32 btf_id)
+{
+	return false;
+}
+
+static inline bool bpf_lsm_is_trusted(const struct bpf_prog *prog)
 {
 	return false;
 }
@@ -73,17 +69,12 @@ static inline struct bpf_storage_blob *bpf_inode(
 	return NULL;
 }
 
-static inline struct bpf_storage_blob *bpf_task(
-	const struct task_struct *task)
-{
-	return NULL;
-}
-
 static inline void bpf_inode_storage_free(struct inode *inode)
 {
 }
 
-static inline void bpf_task_storage_free(struct task_struct *task)
+static inline void bpf_lsm_find_cgroup_shim(const struct bpf_prog *prog,
+					   bpf_func_t *bpf_func)
 {
 }
 

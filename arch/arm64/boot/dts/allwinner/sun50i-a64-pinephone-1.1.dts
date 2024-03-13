@@ -7,7 +7,7 @@
 
 / {
 	model = "Pine64 PinePhone Braveheart (1.1)";
-	compatible = "pine64,pinephone-1.1", "allwinner,sun50i-a64";
+	compatible = "pine64,pinephone-1.1", "pine64,pinephone", "allwinner,sun50i-a64";
 };
 
 &backlight {
@@ -27,6 +27,10 @@
 		2916 3271 3664 4096>;
 	num-interpolated-steps = <50>;
 	default-brightness-level = <400>;
+};
+
+&codec_analog {
+	allwinner,internal-bias-resistor;
 };
 
 &sgm3140 {

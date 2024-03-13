@@ -163,7 +163,7 @@ this documentation.
 	err = phylink_of_phy_connect(priv->phylink, node, flags);
 
    For the most part, ``flags`` can be zero; these flags are passed to
-   the of_phy_attach() inside this function call if a PHY is specified
+   the phy_attach_direct() inside this function call if a PHY is specified
    in the DT node ``node``.
 
    ``node`` should be the DT node which contains the network phy property,
@@ -200,10 +200,12 @@ this documentation.
    when the in-band link state changes - otherwise the link will never
    come up.
 
-   The :c:func:`validate` method should mask the supplied supported mask,
-   and ``state->advertising`` with the supported ethtool link modes.
-   These are the new ethtool link modes, so bitmask operations must be
-   used. For an example, see drivers/net/ethernet/marvell/mvneta.c.
+   The :c:func:`mac_get_caps` method is optional, and if provided should
+   return the phylink MAC capabilities that are supported for the passed
+   ``interface`` mode. In general, there is no need to implement this method.
+   Phylink will use these capabilities in combination with permissible
+   capabilities for ``interface`` to determine the allowable ethtool link
+   modes.
 
    The :c:func:`mac_link_state` method is used to read the link state
    from the MAC, and report back the settings that the MAC is currently
@@ -224,7 +226,7 @@ this documentation.
    function should modify the state and only take the link down when
    absolutely necessary to change the MAC configuration.  An example
    of how to do this can be found in :c:func:`mvneta_mac_config` in
-   drivers/net/ethernet/marvell/mvneta.c.
+   ``drivers/net/ethernet/marvell/mvneta.c``.
 
    For further information on these methods, please see the inline
    documentation in :c:type:`struct phylink_mac_ops <phylink_mac_ops>`.
@@ -281,4 +283,4 @@ as necessary.
 
 For information describing the SFP cage in DT, please see the binding
 documentation in the kernel source tree
-``Documentation/devicetree/bindings/net/sff,sfp.txt``
+``Documentation/devicetree/bindings/net/sff,sfp.yaml``.

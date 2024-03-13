@@ -32,6 +32,7 @@ void rproc_coredump_cleanup(struct rproc *rproc)
 		kfree(entry);
 	}
 }
+EXPORT_SYMBOL_GPL(rproc_coredump_cleanup);
 
 /**
  * rproc_coredump_add_segment() - add segment of device memory to coredump
@@ -152,19 +153,23 @@ static void rproc_copy_segment(struct rproc *rproc, void *dest,
 			       struct rproc_dump_segment *segment,
 			       size_t offset, size_t size)
 {
+	bool is_iomem = false;
 	void *ptr;
 
 	if (segment->dump) {
 		segment->dump(rproc, segment, dest, offset, size);
 	} else {
-		ptr = rproc_da_to_va(rproc, segment->da + offset, size);
+		ptr = rproc_da_to_va(rproc, segment->da + offset, size, &is_iomem);
 		if (!ptr) {
 			dev_err(&rproc->dev,
 				"invalid copy request for segment %pad with offset %zu and size %zu)\n",
 				&segment->da, offset, size);
 			memset(dest, 0xff, size);
 		} else {
-			memcpy(dest, ptr, size);
+			if (is_iomem)
+				memcpy_fromio(dest, (void const __iomem *)ptr, size);
+			else
+				memcpy(dest, ptr, size);
 		}
 	}
 }
@@ -245,7 +250,7 @@ void rproc_coredump(struct rproc *rproc)
 		return;
 
 	if (class == ELFCLASSNONE) {
-		dev_err(&rproc->dev, "Elf class is not set\n");
+		dev_err(&rproc->dev, "ELF class is not set\n");
 		return;
 	}
 
@@ -323,6 +328,7 @@ void rproc_coredump(struct rproc *rproc)
 	 */
 	wait_for_completion(&dump_state.dump_done);
 }
+EXPORT_SYMBOL_GPL(rproc_coredump);
 
 /**
  * rproc_coredump_using_sections() - perform coredump using section headers
@@ -357,7 +363,7 @@ void rproc_coredump_using_sections(struct rproc *rproc)
 		return;
 
 	if (class == ELFCLASSNONE) {
-		dev_err(&rproc->dev, "Elf class is not set\n");
+		dev_err(&rproc->dev, "ELF class is not set\n");
 		return;
 	}
 

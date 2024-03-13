@@ -22,6 +22,7 @@
 #include <net/sctp/sctp.h>
 #include <net/sctp/checksum.h>
 #include <net/protocol.h>
+#include <net/gso.h>
 
 static __le32 sctp_gso_make_checksum(struct sk_buff *skb)
 {
@@ -68,7 +69,7 @@ static struct sk_buff *sctp_gso_segment(struct sk_buff *skb,
 		goto out;
 	}
 
-	segs = skb_segment(skb, features | NETIF_F_HW_CSUM | NETIF_F_SG);
+	segs = skb_segment(skb, (features | NETIF_F_HW_CSUM) & ~NETIF_F_SG);
 	if (IS_ERR(segs))
 		goto out;
 

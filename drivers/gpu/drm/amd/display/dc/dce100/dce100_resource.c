@@ -23,8 +23,6 @@
  *
  */
 
-#include <linux/slab.h>
-
 #include "dm_services.h"
 
 #include "link_encoder.h"
@@ -32,7 +30,7 @@
 
 #include "resource.h"
 #include "include/irq_service_interface.h"
-#include "../virtual/virtual_stream_encoder.h"
+#include "virtual/virtual_stream_encoder.h"
 #include "dce110/dce110_resource.h"
 #include "dce110/dce110_timing_generator.h"
 #include "irq/dce110/irq_service_dce110.h"
@@ -45,7 +43,7 @@
 #include "dce/dce_clock_source.h"
 #include "dce/dce_audio.h"
 #include "dce/dce_hwseq.h"
-#include "dce100/dce100_hw_sequencer.h"
+#include "dce100/dce100_hwseq.h"
 #include "dce/dce_panel_cntl.h"
 
 #include "reg_helper.h"
@@ -57,6 +55,8 @@
 #include "dce/dce_aux.h"
 #include "dce/dce_abm.h"
 #include "dce/dce_i2c.h"
+
+#include "dce100_resource.h"
 
 #ifndef mmMC_HUB_RDREQ_DMIF_LIMIT
 #include "gmc/gmc_8_2_d.h"
@@ -385,7 +385,7 @@ static const struct dc_plane_cap plane_cap = {
 	.pixel_format_support = {
 			.argb8888 = true,
 			.nv12 = false,
-			.fp16 = false
+			.fp16 = true
 	},
 
 	.max_upscale_factor = {
@@ -399,6 +399,10 @@ static const struct dc_plane_cap plane_cap = {
 			.nv12 = 1,
 			.fp16 = 1
 	}
+};
+
+static const struct dc_debug_options debug_defaults = {
+		.enable_legacy_fast_update = true,
 };
 
 #define CTX  ctx
@@ -611,7 +615,8 @@ static const struct encoder_feature_support link_enc_feature = {
 		.flags.bits.IS_TPS3_CAPABLE = true
 };
 
-struct link_encoder *dce100_link_encoder_create(
+static struct link_encoder *dce100_link_encoder_create(
+	struct dc_context *ctx,
 	const struct encoder_init_data *enc_init_data)
 {
 	struct dce110_link_encoder *enc110 =
@@ -650,7 +655,7 @@ static struct panel_cntl *dce100_panel_cntl_create(const struct panel_cntl_init_
 	return &panel_cntl->base;
 }
 
-struct output_pixel_processor *dce100_opp_create(
+static struct output_pixel_processor *dce100_opp_create(
 	struct dc_context *ctx,
 	uint32_t inst)
 {
@@ -665,7 +670,7 @@ struct output_pixel_processor *dce100_opp_create(
 	return &opp->base;
 }
 
-struct dce_aux *dce100_aux_engine_create(
+static struct dce_aux *dce100_aux_engine_create(
 	struct dc_context *ctx,
 	uint32_t inst)
 {
@@ -703,7 +708,7 @@ static const struct dce_i2c_mask i2c_masks = {
 		I2C_COMMON_MASK_SH_LIST_DCE_COMMON_BASE(_MASK)
 };
 
-struct dce_i2c_hw *dce100_i2c_hw_create(
+static struct dce_i2c_hw *dce100_i2c_hw_create(
 	struct dc_context *ctx,
 	uint32_t inst)
 {
@@ -718,7 +723,7 @@ struct dce_i2c_hw *dce100_i2c_hw_create(
 
 	return dce_i2c_hw;
 }
-struct clock_source *dce100_clock_source_create(
+static struct clock_source *dce100_clock_source_create(
 	struct dc_context *ctx,
 	struct dc_bios *bios,
 	enum clock_source_id id,
@@ -742,7 +747,7 @@ struct clock_source *dce100_clock_source_create(
 	return NULL;
 }
 
-void dce100_clock_source_destroy(struct clock_source **clk_src)
+static void dce100_clock_source_destroy(struct clock_source **clk_src)
 {
 	kfree(TO_DCE110_CLK_SRC(*clk_src));
 	*clk_src = NULL;
@@ -819,7 +824,7 @@ static enum dc_status build_mapped_resource(
 		struct dc_state *context,
 		struct dc_stream_state *stream)
 {
-	struct pipe_ctx *pipe_ctx = resource_get_head_pipe_for_stream(&context->res_ctx, stream);
+	struct pipe_ctx *pipe_ctx = resource_get_otg_master_for_stream(&context->res_ctx, stream);
 
 	if (!pipe_ctx)
 		return DC_ERROR_UNEXPECTED;
@@ -831,7 +836,7 @@ static enum dc_status build_mapped_resource(
 	return DC_OK;
 }
 
-bool dce100_validate_bandwidth(
+static bool dce100_validate_bandwidth(
 	struct dc  *dc,
 	struct dc_state *context,
 	bool fast_validate)
@@ -876,7 +881,7 @@ static bool dce100_validate_surface_sets(
 	return true;
 }
 
-enum dc_status dce100_validate_global(
+static enum dc_status dce100_validate_global(
 		struct dc  *dc,
 		struct dc_state *context)
 {
@@ -1070,6 +1075,7 @@ static bool dce100_resource_construct(
 	dc->caps.dual_link_dvi = true;
 	dc->caps.disable_dp_clk_share = true;
 	dc->caps.extended_aux_timeout_support = false;
+	dc->debug = debug_defaults;
 
 	for (i = 0; i < pool->base.pipe_count; i++) {
 		pool->base.timing_generators[i] =

@@ -61,6 +61,8 @@ struct dcn_dsc_state {
 	uint32_t dsc_pic_height;
 	uint32_t dsc_slice_bpg_offset;
 	uint32_t dsc_chunk_size;
+	uint32_t dsc_fw_en;
+	uint32_t dsc_opp_source;
 };
 
 
@@ -74,6 +76,8 @@ union dsc_enc_slice_caps {
 		uint8_t NUM_SLICES_3 : 1; /* This one is not per DSC spec, but our encoder supports it */
 		uint8_t NUM_SLICES_4 : 1;
 		uint8_t NUM_SLICES_8 : 1;
+		uint8_t NUM_SLICES_12 : 1;
+		uint8_t NUM_SLICES_16 : 1;
 	} bits;
 	uint8_t raw;
 };
@@ -88,6 +92,8 @@ struct dsc_enc_caps {
 	int32_t max_total_throughput_mps; /* Maximum total throughput with all the slices combined */
 	int32_t max_slice_width;
 	uint32_t bpp_increment_div; /* bpp increment divisor, e.g. if 16, it's 1/16th of a bit */
+	uint32_t edp_sink_max_bits_per_pixel;
+	bool is_dp;
 };
 
 struct dsc_funcs {
@@ -100,6 +106,7 @@ struct dsc_funcs {
 			uint8_t *dsc_packed_pps);
 	void (*dsc_enable)(struct display_stream_compressor *dsc, int opp_pipe);
 	void (*dsc_disable)(struct display_stream_compressor *dsc);
+	void (*dsc_disconnect)(struct display_stream_compressor *dsc);
 };
 
 #endif

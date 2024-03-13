@@ -40,8 +40,6 @@ static const guid_t MSHW0040_DSM_UUID =
 #define SURFACE_BUTTON_NOTIFY_PRESS_VOLUME_DOWN		0xc2
 #define SURFACE_BUTTON_NOTIFY_RELEASE_VOLUME_DOWN	0xc3
 
-ACPI_MODULE_NAME("surface pro 3 button");
-
 MODULE_AUTHOR("Chen Yu");
 MODULE_DESCRIPTION("Surface Pro3 Button Driver");
 MODULE_LICENSE("GPL v2");
@@ -241,13 +239,12 @@ static int surface_button_add(struct acpi_device *device)
 	return error;
 }
 
-static int surface_button_remove(struct acpi_device *device)
+static void surface_button_remove(struct acpi_device *device)
 {
 	struct surface_button *button = acpi_driver_data(device);
 
 	input_unregister_device(button->input);
 	kfree(button);
-	return 0;
 }
 
 static SIMPLE_DEV_PM_OPS(surface_button_pm,

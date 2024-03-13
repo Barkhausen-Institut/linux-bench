@@ -40,6 +40,7 @@ properties:
       ADC reference voltage supply
 
   adi,sync-in-gpios:
+    maxItems: 1
     description:
       Enables synchronization of multiple devices that require simultaneous
       sampling. A pulse is always required if the configuration is changed
@@ -48,8 +49,6 @@ properties:
 
   reset-gpios:
     maxItems: 1
-
-  spi-max-frequency: true
 
   spi-cpol: true
 
@@ -76,6 +75,7 @@ patternProperties:
 
     properties:
       reg:
+        maxItems: 1
         description: |
           The channel number.
 
@@ -86,7 +86,10 @@ patternProperties:
       - reg
     additionalProperties: false
 
-additionalProperties: false
+allOf:
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+unevaluatedProperties: false
 
 examples:
   - |

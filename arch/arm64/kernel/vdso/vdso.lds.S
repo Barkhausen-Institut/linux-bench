@@ -11,6 +11,7 @@
 #include <linux/const.h>
 #include <asm/page.h>
 #include <asm/vdso.h>
+#include <asm-generic/vmlinux.lds.h>
 
 OUTPUT_FORMAT("elf64-littleaarch64", "elf64-bigaarch64", "elf64-littleaarch64")
 OUTPUT_ARCH(aarch64)
@@ -31,6 +32,13 @@ SECTIONS
 	.gnu.version_d	: { *(.gnu.version_d) }
 	.gnu.version_r	: { *(.gnu.version_r) }
 
+	/*
+	 * Discard .note.gnu.property sections which are unused and have
+	 * different alignment requirement from vDSO note sections.
+	 */
+	/DISCARD/	: {
+		*(.note.GNU-stack .note.gnu.property)
+	}
 	.note		: { *(.note.*) }		:text	:note
 
 	. = ALIGN(16);
@@ -40,15 +48,32 @@ SECTIONS
 	PROVIDE (_etext = .);
 	PROVIDE (etext = .);
 
+	. = ALIGN(4);
+	.altinstructions : {
+		*(.altinstructions)
+	}
+
 	.dynamic	: { *(.dynamic) }		:text	:dynamic
 
-	.rodata		: { *(.rodata*) }		:text
+	.rela.dyn	: ALIGN(8) { *(.rela .rela*) }
+
+	.rodata		: {
+		*(.rodata*)
+		*(.got)
+		*(.got.plt)
+		*(.plt)
+		*(.plt.*)
+		*(.iplt)
+		*(.igot .igot.plt)
+	}						:text
 
 	_end = .;
 	PROVIDE(end = .);
 
+	DWARF_DEBUG
+	ELF_DETAILS
+
 	/DISCARD/	: {
-		*(.note.GNU-stack)
 		*(.data .data.* .gnu.linkonce.d.* .sdata*)
 		*(.bss .sbss .dynbss .dynsbss)
 		*(.eh_frame .eh_frame_hdr)

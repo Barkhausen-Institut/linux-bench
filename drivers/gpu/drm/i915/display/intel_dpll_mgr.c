@@ -21,9 +21,21 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#include <linux/math.h>
+#include <linux/string_helpers.h>
+
+#include "i915_reg.h"
+#include "intel_de.h"
 #include "intel_display_types.h"
+#include "intel_dkl_phy.h"
+#include "intel_dkl_phy_regs.h"
 #include "intel_dpio_phy.h"
+#include "intel_dpll.h"
 #include "intel_dpll_mgr.h"
+#include "intel_hti.h"
+#include "intel_mg_phy_regs.h"
+#include "intel_pch_refclk.h"
+#include "intel_tc.h"
 
 /**
  * DOC: Display PLLs
@@ -45,34 +57,70 @@
  * commit phase.
  */
 
+/* platform specific hooks for managing DPLLs */
+struct intel_shared_dpll_funcs {
+	/*
+	 * Hook for enabling the pll, called from intel_enable_shared_dpll() if
+	 * the pll is not already enabled.
+	 */
+	void (*enable)(struct drm_i915_private *i915,
+		       struct intel_shared_dpll *pll);
+
+	/*
+	 * Hook for disabling the pll, called from intel_disable_shared_dpll()
+	 * only when it is safe to disable the pll, i.e., there are no more
+	 * tracked users for it.
+	 */
+	void (*disable)(struct drm_i915_private *i915,
+			struct intel_shared_dpll *pll);
+
+	/*
+	 * Hook for reading the values currently programmed to the DPLL
+	 * registers. This is used for initial hw state readout and state
+	 * verification after a mode set.
+	 */
+	bool (*get_hw_state)(struct drm_i915_private *i915,
+			     struct intel_shared_dpll *pll,
+			     struct intel_dpll_hw_state *hw_state);
+
+	/*
+	 * Hook for calculating the pll's output frequency based on its passed
+	 * in state.
+	 */
+	int (*get_freq)(struct drm_i915_private *i915,
+			const struct intel_shared_dpll *pll,
+			const struct intel_dpll_hw_state *pll_state);
+};
+
 struct intel_dpll_mgr {
 	const struct dpll_info *dpll_info;
 
-	bool (*get_dplls)(struct intel_atomic_state *state,
-			  struct intel_crtc *crtc,
-			  struct intel_encoder *encoder);
+	int (*compute_dplls)(struct intel_atomic_state *state,
+			     struct intel_crtc *crtc,
+			     struct intel_encoder *encoder);
+	int (*get_dplls)(struct intel_atomic_state *state,
+			 struct intel_crtc *crtc,
+			 struct intel_encoder *encoder);
 	void (*put_dplls)(struct intel_atomic_state *state,
 			  struct intel_crtc *crtc);
 	void (*update_active_dpll)(struct intel_atomic_state *state,
 				   struct intel_crtc *crtc,
 				   struct intel_encoder *encoder);
 	void (*update_ref_clks)(struct drm_i915_private *i915);
-	void (*dump_hw_state)(struct drm_i915_private *dev_priv,
+	void (*dump_hw_state)(struct drm_i915_private *i915,
 			      const struct intel_dpll_hw_state *hw_state);
 };
 
 static void
-intel_atomic_duplicate_dpll_state(struct drm_i915_private *dev_priv,
+intel_atomic_duplicate_dpll_state(struct drm_i915_private *i915,
 				  struct intel_shared_dpll_state *shared_dpll)
 {
-	enum intel_dpll_id i;
+	struct intel_shared_dpll *pll;
+	int i;
 
 	/* Copy shared dpll state */
-	for (i = 0; i < dev_priv->dpll.num_shared_dpll; i++) {
-		struct intel_shared_dpll *pll = &dev_priv->dpll.shared_dplls[i];
-
-		shared_dpll[i] = pll->state;
-	}
+	for_each_shared_dpll(i915, pll, i)
+		shared_dpll[pll->index] = pll->state;
 }
 
 static struct intel_shared_dpll_state *
@@ -94,57 +142,55 @@ intel_atomic_get_shared_dpll_state(struct drm_atomic_state *s)
 
 /**
  * intel_get_shared_dpll_by_id - get a DPLL given its id
- * @dev_priv: i915 device instance
+ * @i915: i915 device instance
  * @id: pll id
  *
  * Returns:
  * A pointer to the DPLL with @id
  */
 struct intel_shared_dpll *
-intel_get_shared_dpll_by_id(struct drm_i915_private *dev_priv,
+intel_get_shared_dpll_by_id(struct drm_i915_private *i915,
 			    enum intel_dpll_id id)
 {
-	return &dev_priv->dpll.shared_dplls[id];
-}
+	struct intel_shared_dpll *pll;
+	int i;
 
-/**
- * intel_get_shared_dpll_id - get the id of a DPLL
- * @dev_priv: i915 device instance
- * @pll: the DPLL
- *
- * Returns:
- * The id of @pll
- */
-enum intel_dpll_id
-intel_get_shared_dpll_id(struct drm_i915_private *dev_priv,
-			 struct intel_shared_dpll *pll)
-{
-	long pll_idx = pll - dev_priv->dpll.shared_dplls;
+	for_each_shared_dpll(i915, pll, i) {
+		if (pll->info->id == id)
+			return pll;
+	}
 
-	if (drm_WARN_ON(&dev_priv->drm,
-			pll_idx < 0 ||
-			pll_idx >= dev_priv->dpll.num_shared_dpll))
-		return -1;
-
-	return pll_idx;
+	MISSING_CASE(id);
+	return NULL;
 }
 
 /* For ILK+ */
-void assert_shared_dpll(struct drm_i915_private *dev_priv,
+void assert_shared_dpll(struct drm_i915_private *i915,
 			struct intel_shared_dpll *pll,
 			bool state)
 {
 	bool cur_state;
 	struct intel_dpll_hw_state hw_state;
 
-	if (drm_WARN(&dev_priv->drm, !pll,
-		     "asserting DPLL %s with no DPLL\n", onoff(state)))
+	if (drm_WARN(&i915->drm, !pll,
+		     "asserting DPLL %s with no DPLL\n", str_on_off(state)))
 		return;
 
-	cur_state = intel_dpll_get_hw_state(dev_priv, pll, &hw_state);
-	I915_STATE_WARN(cur_state != state,
-	     "%s assertion failure (expected %s, current %s)\n",
-			pll->info->name, onoff(state), onoff(cur_state));
+	cur_state = intel_dpll_get_hw_state(i915, pll, &hw_state);
+	I915_STATE_WARN(i915, cur_state != state,
+			"%s assertion failure (expected %s, current %s)\n",
+			pll->info->name, str_on_off(state),
+			str_on_off(cur_state));
+}
+
+static enum tc_port icl_pll_id_to_tc_port(enum intel_dpll_id id)
+{
+	return TC_PORT_1 + id - DPLL_ID_ICL_MGPLL1;
+}
+
+enum intel_dpll_id icl_tc_port_to_pll_id(enum tc_port tc_port)
+{
+	return tc_port - TC_PORT_1 + DPLL_ID_ICL_MGPLL1;
 }
 
 static i915_reg_t
@@ -153,38 +199,24 @@ intel_combo_pll_enable_reg(struct drm_i915_private *i915,
 {
 	if (IS_DG1(i915))
 		return DG1_DPLL_ENABLE(pll->info->id);
-	else if (IS_JSL_EHL(i915) && (pll->info->id == DPLL_ID_EHL_DPLL4))
+	else if ((IS_JASPERLAKE(i915) || IS_ELKHARTLAKE(i915)) &&
+		 (pll->info->id == DPLL_ID_EHL_DPLL4))
 		return MG_PLL_ENABLE(0);
 
-	return CNL_DPLL_ENABLE(pll->info->id);
+	return ICL_DPLL_ENABLE(pll->info->id);
 }
 
-/**
- * intel_prepare_shared_dpll - call a dpll's prepare hook
- * @crtc_state: CRTC, and its state, which has a shared dpll
- *
- * This calls the PLL's prepare hook if it has one and if the PLL is not
- * already enabled. The prepare hook is platform specific.
- */
-void intel_prepare_shared_dpll(const struct intel_crtc_state *crtc_state)
+static i915_reg_t
+intel_tc_pll_enable_reg(struct drm_i915_private *i915,
+			struct intel_shared_dpll *pll)
 {
-	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
-	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
-	struct intel_shared_dpll *pll = crtc_state->shared_dpll;
+	const enum intel_dpll_id id = pll->info->id;
+	enum tc_port tc_port = icl_pll_id_to_tc_port(id);
 
-	if (drm_WARN_ON(&dev_priv->drm, pll == NULL))
-		return;
+	if (IS_ALDERLAKE_P(i915))
+		return ADLP_PORTTC_PLL_ENABLE(tc_port);
 
-	mutex_lock(&dev_priv->dpll.lock);
-	drm_WARN_ON(&dev_priv->drm, !pll->state.crtc_mask);
-	if (!pll->active_mask) {
-		drm_dbg(&dev_priv->drm, "setting up %s\n", pll->info->name);
-		drm_WARN_ON(&dev_priv->drm, pll->on);
-		assert_shared_dpll_disabled(dev_priv, pll);
-
-		pll->info->funcs->prepare(dev_priv, pll);
-	}
-	mutex_unlock(&dev_priv->dpll.lock);
+	return MG_PLL_ENABLE(tc_port);
 }
 
 /**
@@ -196,41 +228,41 @@ void intel_prepare_shared_dpll(const struct intel_crtc_state *crtc_state)
 void intel_enable_shared_dpll(const struct intel_crtc_state *crtc_state)
 {
 	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
-	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
 	struct intel_shared_dpll *pll = crtc_state->shared_dpll;
-	unsigned int crtc_mask = drm_crtc_mask(&crtc->base);
+	unsigned int pipe_mask = BIT(crtc->pipe);
 	unsigned int old_mask;
 
-	if (drm_WARN_ON(&dev_priv->drm, pll == NULL))
+	if (drm_WARN_ON(&i915->drm, pll == NULL))
 		return;
 
-	mutex_lock(&dev_priv->dpll.lock);
+	mutex_lock(&i915->display.dpll.lock);
 	old_mask = pll->active_mask;
 
-	if (drm_WARN_ON(&dev_priv->drm, !(pll->state.crtc_mask & crtc_mask)) ||
-	    drm_WARN_ON(&dev_priv->drm, pll->active_mask & crtc_mask))
+	if (drm_WARN_ON(&i915->drm, !(pll->state.pipe_mask & pipe_mask)) ||
+	    drm_WARN_ON(&i915->drm, pll->active_mask & pipe_mask))
 		goto out;
 
-	pll->active_mask |= crtc_mask;
+	pll->active_mask |= pipe_mask;
 
-	drm_dbg_kms(&dev_priv->drm,
-		    "enable %s (active %x, on? %d) for crtc %d\n",
+	drm_dbg_kms(&i915->drm,
+		    "enable %s (active 0x%x, on? %d) for [CRTC:%d:%s]\n",
 		    pll->info->name, pll->active_mask, pll->on,
-		    crtc->base.base.id);
+		    crtc->base.base.id, crtc->base.name);
 
 	if (old_mask) {
-		drm_WARN_ON(&dev_priv->drm, !pll->on);
-		assert_shared_dpll_enabled(dev_priv, pll);
+		drm_WARN_ON(&i915->drm, !pll->on);
+		assert_shared_dpll_enabled(i915, pll);
 		goto out;
 	}
-	drm_WARN_ON(&dev_priv->drm, pll->on);
+	drm_WARN_ON(&i915->drm, pll->on);
 
-	drm_dbg_kms(&dev_priv->drm, "enabling %s\n", pll->info->name);
-	pll->info->funcs->enable(dev_priv, pll);
+	drm_dbg_kms(&i915->drm, "enabling %s\n", pll->info->name);
+	pll->info->funcs->enable(i915, pll);
 	pll->on = true;
 
 out:
-	mutex_unlock(&dev_priv->dpll.lock);
+	mutex_unlock(&i915->display.dpll.lock);
 }
 
 /**
@@ -242,39 +274,57 @@ out:
 void intel_disable_shared_dpll(const struct intel_crtc_state *crtc_state)
 {
 	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
-	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
 	struct intel_shared_dpll *pll = crtc_state->shared_dpll;
-	unsigned int crtc_mask = drm_crtc_mask(&crtc->base);
+	unsigned int pipe_mask = BIT(crtc->pipe);
 
 	/* PCH only available on ILK+ */
-	if (INTEL_GEN(dev_priv) < 5)
+	if (DISPLAY_VER(i915) < 5)
 		return;
 
 	if (pll == NULL)
 		return;
 
-	mutex_lock(&dev_priv->dpll.lock);
-	if (drm_WARN_ON(&dev_priv->drm, !(pll->active_mask & crtc_mask)))
+	mutex_lock(&i915->display.dpll.lock);
+	if (drm_WARN(&i915->drm, !(pll->active_mask & pipe_mask),
+		     "%s not used by [CRTC:%d:%s]\n", pll->info->name,
+		     crtc->base.base.id, crtc->base.name))
 		goto out;
 
-	drm_dbg_kms(&dev_priv->drm,
-		    "disable %s (active %x, on? %d) for crtc %d\n",
+	drm_dbg_kms(&i915->drm,
+		    "disable %s (active 0x%x, on? %d) for [CRTC:%d:%s]\n",
 		    pll->info->name, pll->active_mask, pll->on,
-		    crtc->base.base.id);
+		    crtc->base.base.id, crtc->base.name);
 
-	assert_shared_dpll_enabled(dev_priv, pll);
-	drm_WARN_ON(&dev_priv->drm, !pll->on);
+	assert_shared_dpll_enabled(i915, pll);
+	drm_WARN_ON(&i915->drm, !pll->on);
 
-	pll->active_mask &= ~crtc_mask;
+	pll->active_mask &= ~pipe_mask;
 	if (pll->active_mask)
 		goto out;
 
-	drm_dbg_kms(&dev_priv->drm, "disabling %s\n", pll->info->name);
-	pll->info->funcs->disable(dev_priv, pll);
+	drm_dbg_kms(&i915->drm, "disabling %s\n", pll->info->name);
+	pll->info->funcs->disable(i915, pll);
 	pll->on = false;
 
 out:
-	mutex_unlock(&dev_priv->dpll.lock);
+	mutex_unlock(&i915->display.dpll.lock);
+}
+
+static unsigned long
+intel_dpll_mask_all(struct drm_i915_private *i915)
+{
+	struct intel_shared_dpll *pll;
+	unsigned long dpll_mask = 0;
+	int i;
+
+	for_each_shared_dpll(i915, pll, i) {
+		drm_WARN_ON(&i915->drm, dpll_mask & BIT(pll->info->id));
+
+		dpll_mask |= BIT(pll->info->id);
+	}
+
+	return dpll_mask;
 }
 
 static struct intel_shared_dpll *
@@ -283,33 +333,38 @@ intel_find_shared_dpll(struct intel_atomic_state *state,
 		       const struct intel_dpll_hw_state *pll_state,
 		       unsigned long dpll_mask)
 {
-	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
-	struct intel_shared_dpll *pll, *unused_pll = NULL;
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
+	unsigned long dpll_mask_all = intel_dpll_mask_all(i915);
 	struct intel_shared_dpll_state *shared_dpll;
-	enum intel_dpll_id i;
+	struct intel_shared_dpll *unused_pll = NULL;
+	enum intel_dpll_id id;
 
 	shared_dpll = intel_atomic_get_shared_dpll_state(&state->base);
 
-	drm_WARN_ON(&dev_priv->drm, dpll_mask & ~(BIT(I915_NUM_PLLS) - 1));
+	drm_WARN_ON(&i915->drm, dpll_mask & ~dpll_mask_all);
 
-	for_each_set_bit(i, &dpll_mask, I915_NUM_PLLS) {
-		pll = &dev_priv->dpll.shared_dplls[i];
+	for_each_set_bit(id, &dpll_mask, fls(dpll_mask_all)) {
+		struct intel_shared_dpll *pll;
+
+		pll = intel_get_shared_dpll_by_id(i915, id);
+		if (!pll)
+			continue;
 
 		/* Only want to check enabled timings first */
-		if (shared_dpll[i].crtc_mask == 0) {
+		if (shared_dpll[pll->index].pipe_mask == 0) {
 			if (!unused_pll)
 				unused_pll = pll;
 			continue;
 		}
 
 		if (memcmp(pll_state,
-			   &shared_dpll[i].hw_state,
+			   &shared_dpll[pll->index].hw_state,
 			   sizeof(*pll_state)) == 0) {
-			drm_dbg_kms(&dev_priv->drm,
-				    "[CRTC:%d:%s] sharing existing %s (crtc mask 0x%08x, active %x)\n",
+			drm_dbg_kms(&i915->drm,
+				    "[CRTC:%d:%s] sharing existing %s (pipe mask 0x%x, active 0x%x)\n",
 				    crtc->base.base.id, crtc->base.name,
 				    pll->info->name,
-				    shared_dpll[i].crtc_mask,
+				    shared_dpll[pll->index].pipe_mask,
 				    pll->active_mask);
 			return pll;
 		}
@@ -317,7 +372,7 @@ intel_find_shared_dpll(struct intel_atomic_state *state,
 
 	/* Ok no matching timings, maybe there's a free one? */
 	if (unused_pll) {
-		drm_dbg_kms(&dev_priv->drm, "[CRTC:%d:%s] allocated %s\n",
+		drm_dbg_kms(&i915->drm, "[CRTC:%d:%s] allocated %s\n",
 			    crtc->base.base.id, crtc->base.name,
 			    unused_pll->info->name);
 		return unused_pll;
@@ -326,25 +381,66 @@ intel_find_shared_dpll(struct intel_atomic_state *state,
 	return NULL;
 }
 
+/**
+ * intel_reference_shared_dpll_crtc - Get a DPLL reference for a CRTC
+ * @crtc: CRTC on which behalf the reference is taken
+ * @pll: DPLL for which the reference is taken
+ * @shared_dpll_state: the DPLL atomic state in which the reference is tracked
+ *
+ * Take a reference for @pll tracking the use of it by @crtc.
+ */
+static void
+intel_reference_shared_dpll_crtc(const struct intel_crtc *crtc,
+				 const struct intel_shared_dpll *pll,
+				 struct intel_shared_dpll_state *shared_dpll_state)
+{
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
+
+	drm_WARN_ON(&i915->drm, (shared_dpll_state->pipe_mask & BIT(crtc->pipe)) != 0);
+
+	shared_dpll_state->pipe_mask |= BIT(crtc->pipe);
+
+	drm_dbg_kms(&i915->drm, "[CRTC:%d:%s] reserving %s\n",
+		    crtc->base.base.id, crtc->base.name, pll->info->name);
+}
+
 static void
 intel_reference_shared_dpll(struct intel_atomic_state *state,
 			    const struct intel_crtc *crtc,
 			    const struct intel_shared_dpll *pll,
 			    const struct intel_dpll_hw_state *pll_state)
 {
-	struct drm_i915_private *i915 = to_i915(state->base.dev);
 	struct intel_shared_dpll_state *shared_dpll;
-	const enum intel_dpll_id id = pll->info->id;
 
 	shared_dpll = intel_atomic_get_shared_dpll_state(&state->base);
 
-	if (shared_dpll[id].crtc_mask == 0)
-		shared_dpll[id].hw_state = *pll_state;
+	if (shared_dpll[pll->index].pipe_mask == 0)
+		shared_dpll[pll->index].hw_state = *pll_state;
 
-	drm_dbg(&i915->drm, "using %s for pipe %c\n", pll->info->name,
-		pipe_name(crtc->pipe));
+	intel_reference_shared_dpll_crtc(crtc, pll, &shared_dpll[pll->index]);
+}
 
-	shared_dpll[id].crtc_mask |= 1 << crtc->pipe;
+/**
+ * intel_unreference_shared_dpll_crtc - Drop a DPLL reference for a CRTC
+ * @crtc: CRTC on which behalf the reference is dropped
+ * @pll: DPLL for which the reference is dropped
+ * @shared_dpll_state: the DPLL atomic state in which the reference is tracked
+ *
+ * Drop a reference for @pll tracking the end of use of it by @crtc.
+ */
+void
+intel_unreference_shared_dpll_crtc(const struct intel_crtc *crtc,
+				   const struct intel_shared_dpll *pll,
+				   struct intel_shared_dpll_state *shared_dpll_state)
+{
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
+
+	drm_WARN_ON(&i915->drm, (shared_dpll_state->pipe_mask & BIT(crtc->pipe)) == 0);
+
+	shared_dpll_state->pipe_mask &= ~BIT(crtc->pipe);
+
+	drm_dbg_kms(&i915->drm, "[CRTC:%d:%s] releasing %s\n",
+		    crtc->base.base.id, crtc->base.name, pll->info->name);
 }
 
 static void intel_unreference_shared_dpll(struct intel_atomic_state *state,
@@ -354,7 +450,8 @@ static void intel_unreference_shared_dpll(struct intel_atomic_state *state,
 	struct intel_shared_dpll_state *shared_dpll;
 
 	shared_dpll = intel_atomic_get_shared_dpll_state(&state->base);
-	shared_dpll[pll->info->id].crtc_mask &= ~(1 << crtc->pipe);
+
+	intel_unreference_shared_dpll_crtc(crtc, pll, &shared_dpll[pll->index]);
 }
 
 static void intel_put_dpll(struct intel_atomic_state *state,
@@ -386,22 +483,19 @@ static void intel_put_dpll(struct intel_atomic_state *state,
  */
 void intel_shared_dpll_swap_state(struct intel_atomic_state *state)
 {
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
 	struct intel_shared_dpll_state *shared_dpll = state->shared_dpll;
-	enum intel_dpll_id i;
+	struct intel_shared_dpll *pll;
+	int i;
 
 	if (!state->dpll_set)
 		return;
 
-	for (i = 0; i < dev_priv->dpll.num_shared_dpll; i++) {
-		struct intel_shared_dpll *pll =
-			&dev_priv->dpll.shared_dplls[i];
-
-		swap(pll->state, shared_dpll[i]);
-	}
+	for_each_shared_dpll(i915, pll, i)
+		swap(pll->state, shared_dpll[pll->index]);
 }
 
-static bool ibx_pch_dpll_get_hw_state(struct drm_i915_private *dev_priv,
+static bool ibx_pch_dpll_get_hw_state(struct drm_i915_private *i915,
 				      struct intel_shared_dpll *pll,
 				      struct intel_dpll_hw_state *hw_state)
 {
@@ -409,55 +503,48 @@ static bool ibx_pch_dpll_get_hw_state(struct drm_i915_private *dev_priv,
 	intel_wakeref_t wakeref;
 	u32 val;
 
-	wakeref = intel_display_power_get_if_enabled(dev_priv,
+	wakeref = intel_display_power_get_if_enabled(i915,
 						     POWER_DOMAIN_DISPLAY_CORE);
 	if (!wakeref)
 		return false;
 
-	val = intel_de_read(dev_priv, PCH_DPLL(id));
+	val = intel_de_read(i915, PCH_DPLL(id));
 	hw_state->dpll = val;
-	hw_state->fp0 = intel_de_read(dev_priv, PCH_FP0(id));
-	hw_state->fp1 = intel_de_read(dev_priv, PCH_FP1(id));
+	hw_state->fp0 = intel_de_read(i915, PCH_FP0(id));
+	hw_state->fp1 = intel_de_read(i915, PCH_FP1(id));
 
-	intel_display_power_put(dev_priv, POWER_DOMAIN_DISPLAY_CORE, wakeref);
+	intel_display_power_put(i915, POWER_DOMAIN_DISPLAY_CORE, wakeref);
 
 	return val & DPLL_VCO_ENABLE;
 }
 
-static void ibx_pch_dpll_prepare(struct drm_i915_private *dev_priv,
-				 struct intel_shared_dpll *pll)
-{
-	const enum intel_dpll_id id = pll->info->id;
-
-	intel_de_write(dev_priv, PCH_FP0(id), pll->state.hw_state.fp0);
-	intel_de_write(dev_priv, PCH_FP1(id), pll->state.hw_state.fp1);
-}
-
-static void ibx_assert_pch_refclk_enabled(struct drm_i915_private *dev_priv)
+static void ibx_assert_pch_refclk_enabled(struct drm_i915_private *i915)
 {
 	u32 val;
 	bool enabled;
 
-	I915_STATE_WARN_ON(!(HAS_PCH_IBX(dev_priv) || HAS_PCH_CPT(dev_priv)));
-
-	val = intel_de_read(dev_priv, PCH_DREF_CONTROL);
+	val = intel_de_read(i915, PCH_DREF_CONTROL);
 	enabled = !!(val & (DREF_SSC_SOURCE_MASK | DREF_NONSPREAD_SOURCE_MASK |
 			    DREF_SUPERSPREAD_SOURCE_MASK));
-	I915_STATE_WARN(!enabled, "PCH refclk assertion failure, should be active but is disabled\n");
+	I915_STATE_WARN(i915, !enabled,
+			"PCH refclk assertion failure, should be active but is disabled\n");
 }
 
-static void ibx_pch_dpll_enable(struct drm_i915_private *dev_priv,
+static void ibx_pch_dpll_enable(struct drm_i915_private *i915,
 				struct intel_shared_dpll *pll)
 {
 	const enum intel_dpll_id id = pll->info->id;
 
 	/* PCH refclock must be enabled first */
-	ibx_assert_pch_refclk_enabled(dev_priv);
+	ibx_assert_pch_refclk_enabled(i915);
 
-	intel_de_write(dev_priv, PCH_DPLL(id), pll->state.hw_state.dpll);
+	intel_de_write(i915, PCH_FP0(id), pll->state.hw_state.fp0);
+	intel_de_write(i915, PCH_FP1(id), pll->state.hw_state.fp1);
+
+	intel_de_write(i915, PCH_DPLL(id), pll->state.hw_state.dpll);
 
 	/* Wait for the clocks to stabilize. */
-	intel_de_posting_read(dev_priv, PCH_DPLL(id));
+	intel_de_posting_read(i915, PCH_DPLL(id));
 	udelay(150);
 
 	/* The pixel multiplier can only be updated once the
@@ -465,37 +552,44 @@ static void ibx_pch_dpll_enable(struct drm_i915_private *dev_priv,
 	 *
 	 * So write it again.
 	 */
-	intel_de_write(dev_priv, PCH_DPLL(id), pll->state.hw_state.dpll);
-	intel_de_posting_read(dev_priv, PCH_DPLL(id));
+	intel_de_write(i915, PCH_DPLL(id), pll->state.hw_state.dpll);
+	intel_de_posting_read(i915, PCH_DPLL(id));
 	udelay(200);
 }
 
-static void ibx_pch_dpll_disable(struct drm_i915_private *dev_priv,
+static void ibx_pch_dpll_disable(struct drm_i915_private *i915,
 				 struct intel_shared_dpll *pll)
 {
 	const enum intel_dpll_id id = pll->info->id;
 
-	intel_de_write(dev_priv, PCH_DPLL(id), 0);
-	intel_de_posting_read(dev_priv, PCH_DPLL(id));
+	intel_de_write(i915, PCH_DPLL(id), 0);
+	intel_de_posting_read(i915, PCH_DPLL(id));
 	udelay(200);
 }
 
-static bool ibx_get_dpll(struct intel_atomic_state *state,
-			 struct intel_crtc *crtc,
-			 struct intel_encoder *encoder)
+static int ibx_compute_dpll(struct intel_atomic_state *state,
+			    struct intel_crtc *crtc,
+			    struct intel_encoder *encoder)
+{
+	return 0;
+}
+
+static int ibx_get_dpll(struct intel_atomic_state *state,
+			struct intel_crtc *crtc,
+			struct intel_encoder *encoder)
 {
 	struct intel_crtc_state *crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
-	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
 	struct intel_shared_dpll *pll;
-	enum intel_dpll_id i;
+	enum intel_dpll_id id;
 
-	if (HAS_PCH_IBX(dev_priv)) {
+	if (HAS_PCH_IBX(i915)) {
 		/* Ironlake PCH has a fixed PLL->PCH pipe mapping. */
-		i = (enum intel_dpll_id) crtc->pipe;
-		pll = &dev_priv->dpll.shared_dplls[i];
+		id = (enum intel_dpll_id) crtc->pipe;
+		pll = intel_get_shared_dpll_by_id(i915, id);
 
-		drm_dbg_kms(&dev_priv->drm,
+		drm_dbg_kms(&i915->drm,
 			    "[CRTC:%d:%s] using pre-allocated %s\n",
 			    crtc->base.base.id, crtc->base.name,
 			    pll->info->name);
@@ -507,7 +601,7 @@ static bool ibx_get_dpll(struct intel_atomic_state *state,
 	}
 
 	if (!pll)
-		return false;
+		return -EINVAL;
 
 	/* reference the pll */
 	intel_reference_shared_dpll(state, crtc,
@@ -515,13 +609,13 @@ static bool ibx_get_dpll(struct intel_atomic_state *state,
 
 	crtc_state->shared_dpll = pll;
 
-	return true;
+	return 0;
 }
 
-static void ibx_dump_hw_state(struct drm_i915_private *dev_priv,
+static void ibx_dump_hw_state(struct drm_i915_private *i915,
 			      const struct intel_dpll_hw_state *hw_state)
 {
-	drm_dbg_kms(&dev_priv->drm,
+	drm_dbg_kms(&i915->drm,
 		    "dpll_hw_state: dpll: 0x%x, dpll_md: 0x%x, "
 		    "fp0: 0x%x, fp1: 0x%x\n",
 		    hw_state->dpll,
@@ -531,7 +625,6 @@ static void ibx_dump_hw_state(struct drm_i915_private *dev_priv,
 }
 
 static const struct intel_shared_dpll_funcs ibx_pch_dpll_funcs = {
-	.prepare = ibx_pch_dpll_prepare,
 	.enable = ibx_pch_dpll_enable,
 	.disable = ibx_pch_dpll_disable,
 	.get_hw_state = ibx_pch_dpll_get_hw_state,
@@ -545,66 +638,63 @@ static const struct dpll_info pch_plls[] = {
 
 static const struct intel_dpll_mgr pch_pll_mgr = {
 	.dpll_info = pch_plls,
+	.compute_dplls = ibx_compute_dpll,
 	.get_dplls = ibx_get_dpll,
 	.put_dplls = intel_put_dpll,
 	.dump_hw_state = ibx_dump_hw_state,
 };
 
-static void hsw_ddi_wrpll_enable(struct drm_i915_private *dev_priv,
-			       struct intel_shared_dpll *pll)
+static void hsw_ddi_wrpll_enable(struct drm_i915_private *i915,
+				 struct intel_shared_dpll *pll)
 {
 	const enum intel_dpll_id id = pll->info->id;
 
-	intel_de_write(dev_priv, WRPLL_CTL(id), pll->state.hw_state.wrpll);
-	intel_de_posting_read(dev_priv, WRPLL_CTL(id));
+	intel_de_write(i915, WRPLL_CTL(id), pll->state.hw_state.wrpll);
+	intel_de_posting_read(i915, WRPLL_CTL(id));
 	udelay(20);
 }
 
-static void hsw_ddi_spll_enable(struct drm_i915_private *dev_priv,
+static void hsw_ddi_spll_enable(struct drm_i915_private *i915,
 				struct intel_shared_dpll *pll)
 {
-	intel_de_write(dev_priv, SPLL_CTL, pll->state.hw_state.spll);
-	intel_de_posting_read(dev_priv, SPLL_CTL);
+	intel_de_write(i915, SPLL_CTL, pll->state.hw_state.spll);
+	intel_de_posting_read(i915, SPLL_CTL);
 	udelay(20);
 }
 
-static void hsw_ddi_wrpll_disable(struct drm_i915_private *dev_priv,
+static void hsw_ddi_wrpll_disable(struct drm_i915_private *i915,
 				  struct intel_shared_dpll *pll)
 {
 	const enum intel_dpll_id id = pll->info->id;
-	u32 val;
 
-	val = intel_de_read(dev_priv, WRPLL_CTL(id));
-	intel_de_write(dev_priv, WRPLL_CTL(id), val & ~WRPLL_PLL_ENABLE);
-	intel_de_posting_read(dev_priv, WRPLL_CTL(id));
+	intel_de_rmw(i915, WRPLL_CTL(id), WRPLL_PLL_ENABLE, 0);
+	intel_de_posting_read(i915, WRPLL_CTL(id));
 
 	/*
 	 * Try to set up the PCH reference clock once all DPLLs
 	 * that depend on it have been shut down.
 	 */
-	if (dev_priv->pch_ssc_use & BIT(id))
-		intel_init_pch_refclk(dev_priv);
+	if (i915->display.dpll.pch_ssc_use & BIT(id))
+		intel_init_pch_refclk(i915);
 }
 
-static void hsw_ddi_spll_disable(struct drm_i915_private *dev_priv,
+static void hsw_ddi_spll_disable(struct drm_i915_private *i915,
 				 struct intel_shared_dpll *pll)
 {
 	enum intel_dpll_id id = pll->info->id;
-	u32 val;
 
-	val = intel_de_read(dev_priv, SPLL_CTL);
-	intel_de_write(dev_priv, SPLL_CTL, val & ~SPLL_PLL_ENABLE);
-	intel_de_posting_read(dev_priv, SPLL_CTL);
+	intel_de_rmw(i915, SPLL_CTL, SPLL_PLL_ENABLE, 0);
+	intel_de_posting_read(i915, SPLL_CTL);
 
 	/*
 	 * Try to set up the PCH reference clock once all DPLLs
 	 * that depend on it have been shut down.
 	 */
-	if (dev_priv->pch_ssc_use & BIT(id))
-		intel_init_pch_refclk(dev_priv);
+	if (i915->display.dpll.pch_ssc_use & BIT(id))
+		intel_init_pch_refclk(i915);
 }
 
-static bool hsw_ddi_wrpll_get_hw_state(struct drm_i915_private *dev_priv,
+static bool hsw_ddi_wrpll_get_hw_state(struct drm_i915_private *i915,
 				       struct intel_shared_dpll *pll,
 				       struct intel_dpll_hw_state *hw_state)
 {
@@ -612,35 +702,35 @@ static bool hsw_ddi_wrpll_get_hw_state(struct drm_i915_private *dev_priv,
 	intel_wakeref_t wakeref;
 	u32 val;
 
-	wakeref = intel_display_power_get_if_enabled(dev_priv,
+	wakeref = intel_display_power_get_if_enabled(i915,
 						     POWER_DOMAIN_DISPLAY_CORE);
 	if (!wakeref)
 		return false;
 
-	val = intel_de_read(dev_priv, WRPLL_CTL(id));
+	val = intel_de_read(i915, WRPLL_CTL(id));
 	hw_state->wrpll = val;
 
-	intel_display_power_put(dev_priv, POWER_DOMAIN_DISPLAY_CORE, wakeref);
+	intel_display_power_put(i915, POWER_DOMAIN_DISPLAY_CORE, wakeref);
 
 	return val & WRPLL_PLL_ENABLE;
 }
 
-static bool hsw_ddi_spll_get_hw_state(struct drm_i915_private *dev_priv,
+static bool hsw_ddi_spll_get_hw_state(struct drm_i915_private *i915,
 				      struct intel_shared_dpll *pll,
 				      struct intel_dpll_hw_state *hw_state)
 {
 	intel_wakeref_t wakeref;
 	u32 val;
 
-	wakeref = intel_display_power_get_if_enabled(dev_priv,
+	wakeref = intel_display_power_get_if_enabled(i915,
 						     POWER_DOMAIN_DISPLAY_CORE);
 	if (!wakeref)
 		return false;
 
-	val = intel_de_read(dev_priv, SPLL_CTL);
+	val = intel_de_read(i915, SPLL_CTL);
 	hw_state->spll = val;
 
-	intel_display_power_put(dev_priv, POWER_DOMAIN_DISPLAY_CORE, wakeref);
+	intel_display_power_put(i915, POWER_DOMAIN_DISPLAY_CORE, wakeref);
 
 	return val & SPLL_PLL_ENABLE;
 }
@@ -664,8 +754,6 @@ struct hsw_wrpll_rnp {
 
 static unsigned hsw_wrpll_get_budget_for_freq(int clock)
 {
-	unsigned budget;
-
 	switch (clock) {
 	case 25175000:
 	case 25200000:
@@ -698,21 +786,18 @@ static unsigned hsw_wrpll_get_budget_for_freq(int clock)
 	case 222750000:
 	case 296703000:
 	case 297000000:
-		budget = 0;
-		break;
+		return 0;
 	case 233500000:
 	case 245250000:
 	case 247750000:
 	case 253250000:
 	case 298000000:
-		budget = 1500;
-		break;
+		return 1500;
 	case 169128000:
 	case 169500000:
 	case 179500000:
 	case 202000000:
-		budget = 2000;
-		break;
+		return 2000;
 	case 256250000:
 	case 262500000:
 	case 270000000:
@@ -722,18 +807,13 @@ static unsigned hsw_wrpll_get_budget_for_freq(int clock)
 	case 281250000:
 	case 286000000:
 	case 291750000:
-		budget = 4000;
-		break;
+		return 4000;
 	case 267250000:
 	case 268500000:
-		budget = 5000;
-		break;
+		return 5000;
 	default:
-		budget = 1000;
-		break;
+		return 1000;
 	}
-
-	return budget;
 }
 
 static void hsw_wrpll_update_rnp(u64 freq2k, unsigned int budget,
@@ -802,7 +882,7 @@ hsw_ddi_calculate_wrpll(int clock /* in Hz */,
 {
 	u64 freq2k;
 	unsigned p, n2, r2;
-	struct hsw_wrpll_rnp best = { 0, 0, 0 };
+	struct hsw_wrpll_rnp best = {};
 	unsigned budget;
 
 	freq2k = clock / 100;
@@ -861,36 +941,7 @@ hsw_ddi_calculate_wrpll(int clock /* in Hz */,
 	*r2_out = best.r2;
 }
 
-static struct intel_shared_dpll *
-hsw_ddi_wrpll_get_dpll(struct intel_atomic_state *state,
-		       struct intel_crtc *crtc)
-{
-	struct intel_crtc_state *crtc_state =
-		intel_atomic_get_new_crtc_state(state, crtc);
-	struct intel_shared_dpll *pll;
-	u32 val;
-	unsigned int p, n2, r2;
-
-	hsw_ddi_calculate_wrpll(crtc_state->port_clock * 1000, &r2, &n2, &p);
-
-	val = WRPLL_PLL_ENABLE | WRPLL_REF_LCPLL |
-	      WRPLL_DIVIDER_REFERENCE(r2) | WRPLL_DIVIDER_FEEDBACK(n2) |
-	      WRPLL_DIVIDER_POST(p);
-
-	crtc_state->dpll_hw_state.wrpll = val;
-
-	pll = intel_find_shared_dpll(state, crtc,
-				     &crtc_state->dpll_hw_state,
-				     BIT(DPLL_ID_WRPLL2) |
-				     BIT(DPLL_ID_WRPLL1));
-
-	if (!pll)
-		return NULL;
-
-	return pll;
-}
-
-static int hsw_ddi_wrpll_get_freq(struct drm_i915_private *dev_priv,
+static int hsw_ddi_wrpll_get_freq(struct drm_i915_private *i915,
 				  const struct intel_shared_dpll *pll,
 				  const struct intel_dpll_hw_state *pll_state)
 {
@@ -901,8 +952,8 @@ static int hsw_ddi_wrpll_get_freq(struct drm_i915_private *dev_priv,
 	switch (wrpll & WRPLL_REF_MASK) {
 	case WRPLL_REF_SPECIAL_HSW:
 		/* Muxed-SSC for BDW, non-SSC for non-ULT HSW. */
-		if (IS_HASWELL(dev_priv) && !IS_HSW_ULT(dev_priv)) {
-			refclk = dev_priv->dpll.ref_clks.nssc;
+		if (IS_HASWELL(i915) && !IS_HASWELL_ULT(i915)) {
+			refclk = i915->display.dpll.ref_clks.nssc;
 			break;
 		}
 		fallthrough;
@@ -912,7 +963,7 @@ static int hsw_ddi_wrpll_get_freq(struct drm_i915_private *dev_priv,
 		 * code only cares about 5% accuracy, and spread is a max of
 		 * 0.5% downspread.
 		 */
-		refclk = dev_priv->dpll.ref_clks.ssc;
+		refclk = i915->display.dpll.ref_clks.ssc;
 		break;
 	case WRPLL_REF_LCPLL:
 		refclk = 2700000;
@@ -930,10 +981,63 @@ static int hsw_ddi_wrpll_get_freq(struct drm_i915_private *dev_priv,
 	return (refclk * n / 10) / (p * r) * 2;
 }
 
+static int
+hsw_ddi_wrpll_compute_dpll(struct intel_atomic_state *state,
+			   struct intel_crtc *crtc)
+{
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	struct intel_crtc_state *crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+	unsigned int p, n2, r2;
+
+	hsw_ddi_calculate_wrpll(crtc_state->port_clock * 1000, &r2, &n2, &p);
+
+	crtc_state->dpll_hw_state.wrpll =
+		WRPLL_PLL_ENABLE | WRPLL_REF_LCPLL |
+		WRPLL_DIVIDER_REFERENCE(r2) | WRPLL_DIVIDER_FEEDBACK(n2) |
+		WRPLL_DIVIDER_POST(p);
+
+	crtc_state->port_clock = hsw_ddi_wrpll_get_freq(i915, NULL,
+							&crtc_state->dpll_hw_state);
+
+	return 0;
+}
+
+static struct intel_shared_dpll *
+hsw_ddi_wrpll_get_dpll(struct intel_atomic_state *state,
+		       struct intel_crtc *crtc)
+{
+	struct intel_crtc_state *crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+
+	return intel_find_shared_dpll(state, crtc,
+				      &crtc_state->dpll_hw_state,
+				      BIT(DPLL_ID_WRPLL2) |
+				      BIT(DPLL_ID_WRPLL1));
+}
+
+static int
+hsw_ddi_lcpll_compute_dpll(struct intel_crtc_state *crtc_state)
+{
+	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
+	int clock = crtc_state->port_clock;
+
+	switch (clock / 2) {
+	case 81000:
+	case 135000:
+	case 270000:
+		return 0;
+	default:
+		drm_dbg_kms(&i915->drm, "Invalid clock for DP: %d\n",
+			    clock);
+		return -EINVAL;
+	}
+}
+
 static struct intel_shared_dpll *
 hsw_ddi_lcpll_get_dpll(struct intel_crtc_state *crtc_state)
 {
-	struct drm_i915_private *dev_priv = to_i915(crtc_state->uapi.crtc->dev);
+	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
 	struct intel_shared_dpll *pll;
 	enum intel_dpll_id pll_id;
 	int clock = crtc_state->port_clock;
@@ -949,12 +1053,11 @@ hsw_ddi_lcpll_get_dpll(struct intel_crtc_state *crtc_state)
 		pll_id = DPLL_ID_LCPLL_2700;
 		break;
 	default:
-		drm_dbg_kms(&dev_priv->drm, "Invalid clock for DP: %d\n",
-			    clock);
+		MISSING_CASE(clock / 2);
 		return NULL;
 	}
 
-	pll = intel_get_shared_dpll_by_id(dev_priv, pll_id);
+	pll = intel_get_shared_dpll_by_id(i915, pll_id);
 
 	if (!pll)
 		return NULL;
@@ -986,18 +1089,28 @@ static int hsw_ddi_lcpll_get_freq(struct drm_i915_private *i915,
 	return link_clock * 2;
 }
 
+static int
+hsw_ddi_spll_compute_dpll(struct intel_atomic_state *state,
+			  struct intel_crtc *crtc)
+{
+	struct intel_crtc_state *crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+
+	if (drm_WARN_ON(crtc->base.dev, crtc_state->port_clock / 2 != 135000))
+		return -EINVAL;
+
+	crtc_state->dpll_hw_state.spll =
+		SPLL_PLL_ENABLE | SPLL_FREQ_1350MHz | SPLL_REF_MUXED_SSC;
+
+	return 0;
+}
+
 static struct intel_shared_dpll *
 hsw_ddi_spll_get_dpll(struct intel_atomic_state *state,
 		      struct intel_crtc *crtc)
 {
 	struct intel_crtc_state *crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
-
-	if (drm_WARN_ON(crtc->base.dev, crtc_state->port_clock / 2 != 135000))
-		return NULL;
-
-	crtc_state->dpll_hw_state.spll = SPLL_PLL_ENABLE | SPLL_FREQ_1350MHz |
-					 SPLL_REF_MUXED_SSC;
 
 	return intel_find_shared_dpll(state, crtc, &crtc_state->dpll_hw_state,
 				      BIT(DPLL_ID_SPLL));
@@ -1027,16 +1140,30 @@ static int hsw_ddi_spll_get_freq(struct drm_i915_private *i915,
 	return link_clock * 2;
 }
 
-static bool hsw_get_dpll(struct intel_atomic_state *state,
-			 struct intel_crtc *crtc,
-			 struct intel_encoder *encoder)
+static int hsw_compute_dpll(struct intel_atomic_state *state,
+			    struct intel_crtc *crtc,
+			    struct intel_encoder *encoder)
 {
 	struct intel_crtc_state *crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
-	struct intel_shared_dpll *pll;
 
-	memset(&crtc_state->dpll_hw_state, 0,
-	       sizeof(crtc_state->dpll_hw_state));
+	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_HDMI))
+		return hsw_ddi_wrpll_compute_dpll(state, crtc);
+	else if (intel_crtc_has_dp_encoder(crtc_state))
+		return hsw_ddi_lcpll_compute_dpll(crtc_state);
+	else if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_ANALOG))
+		return hsw_ddi_spll_compute_dpll(state, crtc);
+	else
+		return -EINVAL;
+}
+
+static int hsw_get_dpll(struct intel_atomic_state *state,
+			struct intel_crtc *crtc,
+			struct intel_encoder *encoder)
+{
+	struct intel_crtc_state *crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+	struct intel_shared_dpll *pll = NULL;
 
 	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_HDMI))
 		pll = hsw_ddi_wrpll_get_dpll(state, crtc);
@@ -1044,34 +1171,32 @@ static bool hsw_get_dpll(struct intel_atomic_state *state,
 		pll = hsw_ddi_lcpll_get_dpll(crtc_state);
 	else if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_ANALOG))
 		pll = hsw_ddi_spll_get_dpll(state, crtc);
-	else
-		return false;
 
 	if (!pll)
-		return false;
+		return -EINVAL;
 
 	intel_reference_shared_dpll(state, crtc,
 				    pll, &crtc_state->dpll_hw_state);
 
 	crtc_state->shared_dpll = pll;
 
-	return true;
+	return 0;
 }
 
 static void hsw_update_dpll_ref_clks(struct drm_i915_private *i915)
 {
-	i915->dpll.ref_clks.ssc = 135000;
+	i915->display.dpll.ref_clks.ssc = 135000;
 	/* Non-SSC is only used on non-ULT HSW. */
 	if (intel_de_read(i915, FUSE_STRAP3) & HSW_REF_CLK_SELECT)
-		i915->dpll.ref_clks.nssc = 24000;
+		i915->display.dpll.ref_clks.nssc = 24000;
 	else
-		i915->dpll.ref_clks.nssc = 135000;
+		i915->display.dpll.ref_clks.nssc = 135000;
 }
 
-static void hsw_dump_hw_state(struct drm_i915_private *dev_priv,
+static void hsw_dump_hw_state(struct drm_i915_private *i915,
 			      const struct intel_dpll_hw_state *hw_state)
 {
-	drm_dbg_kms(&dev_priv->drm, "dpll_hw_state: wrpll: 0x%x spll: 0x%x\n",
+	drm_dbg_kms(&i915->drm, "dpll_hw_state: wrpll: 0x%x spll: 0x%x\n",
 		    hw_state->wrpll, hw_state->spll);
 }
 
@@ -1089,17 +1214,17 @@ static const struct intel_shared_dpll_funcs hsw_ddi_spll_funcs = {
 	.get_freq = hsw_ddi_spll_get_freq,
 };
 
-static void hsw_ddi_lcpll_enable(struct drm_i915_private *dev_priv,
+static void hsw_ddi_lcpll_enable(struct drm_i915_private *i915,
 				 struct intel_shared_dpll *pll)
 {
 }
 
-static void hsw_ddi_lcpll_disable(struct drm_i915_private *dev_priv,
+static void hsw_ddi_lcpll_disable(struct drm_i915_private *i915,
 				  struct intel_shared_dpll *pll)
 {
 }
 
-static bool hsw_ddi_lcpll_get_hw_state(struct drm_i915_private *dev_priv,
+static bool hsw_ddi_lcpll_get_hw_state(struct drm_i915_private *i915,
 				       struct intel_shared_dpll *pll,
 				       struct intel_dpll_hw_state *hw_state)
 {
@@ -1125,6 +1250,7 @@ static const struct dpll_info hsw_plls[] = {
 
 static const struct intel_dpll_mgr hsw_pll_mgr = {
 	.dpll_info = hsw_plls,
+	.compute_dplls = hsw_compute_dpll,
 	.get_dplls = hsw_get_dpll,
 	.put_dplls = intel_put_dpll,
 	.update_ref_clks = hsw_update_dpll_ref_clks,
@@ -1162,68 +1288,60 @@ static const struct skl_dpll_regs skl_dpll_regs[4] = {
 	},
 };
 
-static void skl_ddi_pll_write_ctrl1(struct drm_i915_private *dev_priv,
+static void skl_ddi_pll_write_ctrl1(struct drm_i915_private *i915,
 				    struct intel_shared_dpll *pll)
 {
 	const enum intel_dpll_id id = pll->info->id;
-	u32 val;
 
-	val = intel_de_read(dev_priv, DPLL_CTRL1);
-
-	val &= ~(DPLL_CTRL1_HDMI_MODE(id) |
-		 DPLL_CTRL1_SSC(id) |
-		 DPLL_CTRL1_LINK_RATE_MASK(id));
-	val |= pll->state.hw_state.ctrl1 << (id * 6);
-
-	intel_de_write(dev_priv, DPLL_CTRL1, val);
-	intel_de_posting_read(dev_priv, DPLL_CTRL1);
+	intel_de_rmw(i915, DPLL_CTRL1,
+		     DPLL_CTRL1_HDMI_MODE(id) | DPLL_CTRL1_SSC(id) | DPLL_CTRL1_LINK_RATE_MASK(id),
+		     pll->state.hw_state.ctrl1 << (id * 6));
+	intel_de_posting_read(i915, DPLL_CTRL1);
 }
 
-static void skl_ddi_pll_enable(struct drm_i915_private *dev_priv,
+static void skl_ddi_pll_enable(struct drm_i915_private *i915,
 			       struct intel_shared_dpll *pll)
 {
 	const struct skl_dpll_regs *regs = skl_dpll_regs;
 	const enum intel_dpll_id id = pll->info->id;
 
-	skl_ddi_pll_write_ctrl1(dev_priv, pll);
+	skl_ddi_pll_write_ctrl1(i915, pll);
 
-	intel_de_write(dev_priv, regs[id].cfgcr1, pll->state.hw_state.cfgcr1);
-	intel_de_write(dev_priv, regs[id].cfgcr2, pll->state.hw_state.cfgcr2);
-	intel_de_posting_read(dev_priv, regs[id].cfgcr1);
-	intel_de_posting_read(dev_priv, regs[id].cfgcr2);
+	intel_de_write(i915, regs[id].cfgcr1, pll->state.hw_state.cfgcr1);
+	intel_de_write(i915, regs[id].cfgcr2, pll->state.hw_state.cfgcr2);
+	intel_de_posting_read(i915, regs[id].cfgcr1);
+	intel_de_posting_read(i915, regs[id].cfgcr2);
 
 	/* the enable bit is always bit 31 */
-	intel_de_write(dev_priv, regs[id].ctl,
-		       intel_de_read(dev_priv, regs[id].ctl) | LCPLL_PLL_ENABLE);
+	intel_de_rmw(i915, regs[id].ctl, 0, LCPLL_PLL_ENABLE);
 
-	if (intel_de_wait_for_set(dev_priv, DPLL_STATUS, DPLL_LOCK(id), 5))
-		drm_err(&dev_priv->drm, "DPLL %d not locked\n", id);
+	if (intel_de_wait_for_set(i915, DPLL_STATUS, DPLL_LOCK(id), 5))
+		drm_err(&i915->drm, "DPLL %d not locked\n", id);
 }
 
-static void skl_ddi_dpll0_enable(struct drm_i915_private *dev_priv,
+static void skl_ddi_dpll0_enable(struct drm_i915_private *i915,
 				 struct intel_shared_dpll *pll)
 {
-	skl_ddi_pll_write_ctrl1(dev_priv, pll);
+	skl_ddi_pll_write_ctrl1(i915, pll);
 }
 
-static void skl_ddi_pll_disable(struct drm_i915_private *dev_priv,
+static void skl_ddi_pll_disable(struct drm_i915_private *i915,
 				struct intel_shared_dpll *pll)
 {
 	const struct skl_dpll_regs *regs = skl_dpll_regs;
 	const enum intel_dpll_id id = pll->info->id;
 
 	/* the enable bit is always bit 31 */
-	intel_de_write(dev_priv, regs[id].ctl,
-		       intel_de_read(dev_priv, regs[id].ctl) & ~LCPLL_PLL_ENABLE);
-	intel_de_posting_read(dev_priv, regs[id].ctl);
+	intel_de_rmw(i915, regs[id].ctl, LCPLL_PLL_ENABLE, 0);
+	intel_de_posting_read(i915, regs[id].ctl);
 }
 
-static void skl_ddi_dpll0_disable(struct drm_i915_private *dev_priv,
+static void skl_ddi_dpll0_disable(struct drm_i915_private *i915,
 				  struct intel_shared_dpll *pll)
 {
 }
 
-static bool skl_ddi_pll_get_hw_state(struct drm_i915_private *dev_priv,
+static bool skl_ddi_pll_get_hw_state(struct drm_i915_private *i915,
 				     struct intel_shared_dpll *pll,
 				     struct intel_dpll_hw_state *hw_state)
 {
@@ -1233,34 +1351,34 @@ static bool skl_ddi_pll_get_hw_state(struct drm_i915_private *dev_priv,
 	intel_wakeref_t wakeref;
 	bool ret;
 
-	wakeref = intel_display_power_get_if_enabled(dev_priv,
+	wakeref = intel_display_power_get_if_enabled(i915,
 						     POWER_DOMAIN_DISPLAY_CORE);
 	if (!wakeref)
 		return false;
 
 	ret = false;
 
-	val = intel_de_read(dev_priv, regs[id].ctl);
+	val = intel_de_read(i915, regs[id].ctl);
 	if (!(val & LCPLL_PLL_ENABLE))
 		goto out;
 
-	val = intel_de_read(dev_priv, DPLL_CTRL1);
+	val = intel_de_read(i915, DPLL_CTRL1);
 	hw_state->ctrl1 = (val >> (id * 6)) & 0x3f;
 
 	/* avoid reading back stale values if HDMI mode is not enabled */
 	if (val & DPLL_CTRL1_HDMI_MODE(id)) {
-		hw_state->cfgcr1 = intel_de_read(dev_priv, regs[id].cfgcr1);
-		hw_state->cfgcr2 = intel_de_read(dev_priv, regs[id].cfgcr2);
+		hw_state->cfgcr1 = intel_de_read(i915, regs[id].cfgcr1);
+		hw_state->cfgcr2 = intel_de_read(i915, regs[id].cfgcr2);
 	}
 	ret = true;
 
 out:
-	intel_display_power_put(dev_priv, POWER_DOMAIN_DISPLAY_CORE, wakeref);
+	intel_display_power_put(i915, POWER_DOMAIN_DISPLAY_CORE, wakeref);
 
 	return ret;
 }
 
-static bool skl_ddi_dpll0_get_hw_state(struct drm_i915_private *dev_priv,
+static bool skl_ddi_dpll0_get_hw_state(struct drm_i915_private *i915,
 				       struct intel_shared_dpll *pll,
 				       struct intel_dpll_hw_state *hw_state)
 {
@@ -1270,7 +1388,7 @@ static bool skl_ddi_dpll0_get_hw_state(struct drm_i915_private *dev_priv,
 	u32 val;
 	bool ret;
 
-	wakeref = intel_display_power_get_if_enabled(dev_priv,
+	wakeref = intel_display_power_get_if_enabled(i915,
 						     POWER_DOMAIN_DISPLAY_CORE);
 	if (!wakeref)
 		return false;
@@ -1278,17 +1396,17 @@ static bool skl_ddi_dpll0_get_hw_state(struct drm_i915_private *dev_priv,
 	ret = false;
 
 	/* DPLL0 is always enabled since it drives CDCLK */
-	val = intel_de_read(dev_priv, regs[id].ctl);
-	if (drm_WARN_ON(&dev_priv->drm, !(val & LCPLL_PLL_ENABLE)))
+	val = intel_de_read(i915, regs[id].ctl);
+	if (drm_WARN_ON(&i915->drm, !(val & LCPLL_PLL_ENABLE)))
 		goto out;
 
-	val = intel_de_read(dev_priv, DPLL_CTRL1);
+	val = intel_de_read(i915, DPLL_CTRL1);
 	hw_state->ctrl1 = (val >> (id * 6)) & 0x3f;
 
 	ret = true;
 
 out:
-	intel_display_power_put(dev_priv, POWER_DOMAIN_DISPLAY_CORE, wakeref);
+	intel_display_power_put(i915, POWER_DOMAIN_DISPLAY_CORE, wakeref);
 
 	return ret;
 }
@@ -1299,13 +1417,6 @@ struct skl_wrpll_context {
 	u64 dco_freq;			/* chosen dco freq */
 	unsigned int p;			/* chosen divider */
 };
-
-static void skl_wrpll_context_init(struct skl_wrpll_context *ctx)
-{
-	memset(ctx, 0, sizeof(*ctx));
-
-	ctx->min_deviation = U64_MAX;
-}
 
 /* DCO freq must be within +1%/-6%  of the DCO central freq */
 #define SKL_DCO_MAX_PDEVIATION	100
@@ -1467,33 +1578,33 @@ static void skl_wrpll_params_populate(struct skl_wrpll_params *params,
 			 params->dco_integer * MHz(1)) * 0x8000, MHz(1));
 }
 
-static bool
+static int
 skl_ddi_calculate_wrpll(int clock /* in Hz */,
 			int ref_clock,
 			struct skl_wrpll_params *wrpll_params)
 {
-	u64 afe_clock = clock * 5; /* AFE Clock is 5x Pixel clock */
-	u64 dco_central_freq[3] = { 8400000000ULL,
-				    9000000000ULL,
-				    9600000000ULL };
-	static const int even_dividers[] = {  4,  6,  8, 10, 12, 14, 16, 18, 20,
-					     24, 28, 30, 32, 36, 40, 42, 44,
-					     48, 52, 54, 56, 60, 64, 66, 68,
-					     70, 72, 76, 78, 80, 84, 88, 90,
-					     92, 96, 98 };
-	static const int odd_dividers[] = { 3, 5, 7, 9, 15, 21, 35 };
+	static const u64 dco_central_freq[3] = { 8400000000ULL,
+						 9000000000ULL,
+						 9600000000ULL };
+	static const u8 even_dividers[] = {  4,  6,  8, 10, 12, 14, 16, 18, 20,
+					    24, 28, 30, 32, 36, 40, 42, 44,
+					    48, 52, 54, 56, 60, 64, 66, 68,
+					    70, 72, 76, 78, 80, 84, 88, 90,
+					    92, 96, 98 };
+	static const u8 odd_dividers[] = { 3, 5, 7, 9, 15, 21, 35 };
 	static const struct {
-		const int *list;
+		const u8 *list;
 		int n_dividers;
 	} dividers[] = {
 		{ even_dividers, ARRAY_SIZE(even_dividers) },
 		{ odd_dividers, ARRAY_SIZE(odd_dividers) },
 	};
-	struct skl_wrpll_context ctx;
+	struct skl_wrpll_context ctx = {
+		.min_deviation = U64_MAX,
+	};
 	unsigned int dco, d, i;
 	unsigned int p0, p1, p2;
-
-	skl_wrpll_context_init(&ctx);
+	u64 afe_clock = clock * 5; /* AFE Clock is 5x Pixel clock */
 
 	for (d = 0; d < ARRAY_SIZE(dividers); d++) {
 		for (dco = 0; dco < ARRAY_SIZE(dco_central_freq); dco++) {
@@ -1524,10 +1635,8 @@ skip_remaining_dividers:
 			break;
 	}
 
-	if (!ctx.p) {
-		DRM_DEBUG_DRIVER("No valid divider found for %dHz\n", clock);
-		return false;
-	}
+	if (!ctx.p)
+		return -EINVAL;
 
 	/*
 	 * gcc incorrectly analyses that these can be used without being
@@ -1538,52 +1647,14 @@ skip_remaining_dividers:
 	skl_wrpll_params_populate(wrpll_params, afe_clock, ref_clock,
 				  ctx.central_freq, p0, p1, p2);
 
-	return true;
-}
-
-static bool skl_ddi_hdmi_pll_dividers(struct intel_crtc_state *crtc_state)
-{
-	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
-	u32 ctrl1, cfgcr1, cfgcr2;
-	struct skl_wrpll_params wrpll_params = { 0, };
-
-	/*
-	 * See comment in intel_dpll_hw_state to understand why we always use 0
-	 * as the DPLL id in this function.
-	 */
-	ctrl1 = DPLL_CTRL1_OVERRIDE(0);
-
-	ctrl1 |= DPLL_CTRL1_HDMI_MODE(0);
-
-	if (!skl_ddi_calculate_wrpll(crtc_state->port_clock * 1000,
-				     i915->dpll.ref_clks.nssc,
-				     &wrpll_params))
-		return false;
-
-	cfgcr1 = DPLL_CFGCR1_FREQ_ENABLE |
-		DPLL_CFGCR1_DCO_FRACTION(wrpll_params.dco_fraction) |
-		wrpll_params.dco_integer;
-
-	cfgcr2 = DPLL_CFGCR2_QDIV_RATIO(wrpll_params.qdiv_ratio) |
-		DPLL_CFGCR2_QDIV_MODE(wrpll_params.qdiv_mode) |
-		DPLL_CFGCR2_KDIV(wrpll_params.kdiv) |
-		DPLL_CFGCR2_PDIV(wrpll_params.pdiv) |
-		wrpll_params.central_freq;
-
-	memset(&crtc_state->dpll_hw_state, 0,
-	       sizeof(crtc_state->dpll_hw_state));
-
-	crtc_state->dpll_hw_state.ctrl1 = ctrl1;
-	crtc_state->dpll_hw_state.cfgcr1 = cfgcr1;
-	crtc_state->dpll_hw_state.cfgcr2 = cfgcr2;
-	return true;
+	return 0;
 }
 
 static int skl_ddi_wrpll_get_freq(struct drm_i915_private *i915,
 				  const struct intel_shared_dpll *pll,
 				  const struct intel_dpll_hw_state *pll_state)
 {
-	int ref_clock = i915->dpll.ref_clks.nssc;
+	int ref_clock = i915->display.dpll.ref_clks.nssc;
 	u32 p0, p1, p2, dco_freq;
 
 	p0 = pll_state->cfgcr2 & DPLL_CFGCR2_PDIV_MASK;
@@ -1650,7 +1721,47 @@ static int skl_ddi_wrpll_get_freq(struct drm_i915_private *i915,
 	return dco_freq / (p0 * p1 * p2 * 5);
 }
 
-static bool
+static int skl_ddi_hdmi_pll_dividers(struct intel_crtc_state *crtc_state)
+{
+	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
+	struct skl_wrpll_params wrpll_params = {};
+	u32 ctrl1, cfgcr1, cfgcr2;
+	int ret;
+
+	/*
+	 * See comment in intel_dpll_hw_state to understand why we always use 0
+	 * as the DPLL id in this function.
+	 */
+	ctrl1 = DPLL_CTRL1_OVERRIDE(0);
+
+	ctrl1 |= DPLL_CTRL1_HDMI_MODE(0);
+
+	ret = skl_ddi_calculate_wrpll(crtc_state->port_clock * 1000,
+				      i915->display.dpll.ref_clks.nssc, &wrpll_params);
+	if (ret)
+		return ret;
+
+	cfgcr1 = DPLL_CFGCR1_FREQ_ENABLE |
+		DPLL_CFGCR1_DCO_FRACTION(wrpll_params.dco_fraction) |
+		wrpll_params.dco_integer;
+
+	cfgcr2 = DPLL_CFGCR2_QDIV_RATIO(wrpll_params.qdiv_ratio) |
+		DPLL_CFGCR2_QDIV_MODE(wrpll_params.qdiv_mode) |
+		DPLL_CFGCR2_KDIV(wrpll_params.kdiv) |
+		DPLL_CFGCR2_PDIV(wrpll_params.pdiv) |
+		wrpll_params.central_freq;
+
+	crtc_state->dpll_hw_state.ctrl1 = ctrl1;
+	crtc_state->dpll_hw_state.cfgcr1 = cfgcr1;
+	crtc_state->dpll_hw_state.cfgcr2 = cfgcr2;
+
+	crtc_state->port_clock = skl_ddi_wrpll_get_freq(i915, NULL,
+							&crtc_state->dpll_hw_state);
+
+	return 0;
+}
+
+static int
 skl_ddi_dp_set_dpll_hw_state(struct intel_crtc_state *crtc_state)
 {
 	u32 ctrl1;
@@ -1682,12 +1793,9 @@ skl_ddi_dp_set_dpll_hw_state(struct intel_crtc_state *crtc_state)
 		break;
 	}
 
-	memset(&crtc_state->dpll_hw_state, 0,
-	       sizeof(crtc_state->dpll_hw_state));
-
 	crtc_state->dpll_hw_state.ctrl1 = ctrl1;
 
-	return true;
+	return 0;
 }
 
 static int skl_ddi_lcpll_get_freq(struct drm_i915_private *i915,
@@ -1724,33 +1832,28 @@ static int skl_ddi_lcpll_get_freq(struct drm_i915_private *i915,
 	return link_clock * 2;
 }
 
-static bool skl_get_dpll(struct intel_atomic_state *state,
-			 struct intel_crtc *crtc,
-			 struct intel_encoder *encoder)
+static int skl_compute_dpll(struct intel_atomic_state *state,
+			    struct intel_crtc *crtc,
+			    struct intel_encoder *encoder)
 {
 	struct intel_crtc_state *crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
-	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
-	struct intel_shared_dpll *pll;
-	bool bret;
 
-	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_HDMI)) {
-		bret = skl_ddi_hdmi_pll_dividers(crtc_state);
-		if (!bret) {
-			drm_dbg_kms(&i915->drm,
-				    "Could not get HDMI pll dividers.\n");
-			return false;
-		}
-	} else if (intel_crtc_has_dp_encoder(crtc_state)) {
-		bret = skl_ddi_dp_set_dpll_hw_state(crtc_state);
-		if (!bret) {
-			drm_dbg_kms(&i915->drm,
-				    "Could not set DP dpll HW state.\n");
-			return false;
-		}
-	} else {
-		return false;
-	}
+	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_HDMI))
+		return skl_ddi_hdmi_pll_dividers(crtc_state);
+	else if (intel_crtc_has_dp_encoder(crtc_state))
+		return skl_ddi_dp_set_dpll_hw_state(crtc_state);
+	else
+		return -EINVAL;
+}
+
+static int skl_get_dpll(struct intel_atomic_state *state,
+			struct intel_crtc *crtc,
+			struct intel_encoder *encoder)
+{
+	struct intel_crtc_state *crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+	struct intel_shared_dpll *pll;
 
 	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_EDP))
 		pll = intel_find_shared_dpll(state, crtc,
@@ -1763,14 +1866,14 @@ static bool skl_get_dpll(struct intel_atomic_state *state,
 					     BIT(DPLL_ID_SKL_DPLL2) |
 					     BIT(DPLL_ID_SKL_DPLL1));
 	if (!pll)
-		return false;
+		return -EINVAL;
 
 	intel_reference_shared_dpll(state, crtc,
 				    pll, &crtc_state->dpll_hw_state);
 
 	crtc_state->shared_dpll = pll;
 
-	return true;
+	return 0;
 }
 
 static int skl_ddi_pll_get_freq(struct drm_i915_private *i915,
@@ -1790,13 +1893,13 @@ static int skl_ddi_pll_get_freq(struct drm_i915_private *i915,
 static void skl_update_dpll_ref_clks(struct drm_i915_private *i915)
 {
 	/* No SSC ref */
-	i915->dpll.ref_clks.nssc = i915->cdclk.hw.ref;
+	i915->display.dpll.ref_clks.nssc = i915->display.cdclk.hw.ref;
 }
 
-static void skl_dump_hw_state(struct drm_i915_private *dev_priv,
+static void skl_dump_hw_state(struct drm_i915_private *i915,
 			      const struct intel_dpll_hw_state *hw_state)
 {
-	drm_dbg_kms(&dev_priv->drm, "dpll_hw_state: "
+	drm_dbg_kms(&i915->drm, "dpll_hw_state: "
 		      "ctrl1: 0x%x, cfgcr1: 0x%x, cfgcr2: 0x%x\n",
 		      hw_state->ctrl1,
 		      hw_state->cfgcr1,
@@ -1827,159 +1930,136 @@ static const struct dpll_info skl_plls[] = {
 
 static const struct intel_dpll_mgr skl_pll_mgr = {
 	.dpll_info = skl_plls,
+	.compute_dplls = skl_compute_dpll,
 	.get_dplls = skl_get_dpll,
 	.put_dplls = intel_put_dpll,
 	.update_ref_clks = skl_update_dpll_ref_clks,
 	.dump_hw_state = skl_dump_hw_state,
 };
 
-static void bxt_ddi_pll_enable(struct drm_i915_private *dev_priv,
-				struct intel_shared_dpll *pll)
+static void bxt_ddi_pll_enable(struct drm_i915_private *i915,
+			       struct intel_shared_dpll *pll)
 {
 	u32 temp;
 	enum port port = (enum port)pll->info->id; /* 1:1 port->PLL mapping */
 	enum dpio_phy phy;
 	enum dpio_channel ch;
 
-	bxt_port_to_phy_channel(dev_priv, port, &phy, &ch);
+	bxt_port_to_phy_channel(i915, port, &phy, &ch);
 
 	/* Non-SSC reference */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL_ENABLE(port));
-	temp |= PORT_PLL_REF_SEL;
-	intel_de_write(dev_priv, BXT_PORT_PLL_ENABLE(port), temp);
+	intel_de_rmw(i915, BXT_PORT_PLL_ENABLE(port), 0, PORT_PLL_REF_SEL);
 
-	if (IS_GEMINILAKE(dev_priv)) {
-		temp = intel_de_read(dev_priv, BXT_PORT_PLL_ENABLE(port));
-		temp |= PORT_PLL_POWER_ENABLE;
-		intel_de_write(dev_priv, BXT_PORT_PLL_ENABLE(port), temp);
+	if (IS_GEMINILAKE(i915)) {
+		intel_de_rmw(i915, BXT_PORT_PLL_ENABLE(port),
+			     0, PORT_PLL_POWER_ENABLE);
 
-		if (wait_for_us((intel_de_read(dev_priv, BXT_PORT_PLL_ENABLE(port)) &
+		if (wait_for_us((intel_de_read(i915, BXT_PORT_PLL_ENABLE(port)) &
 				 PORT_PLL_POWER_STATE), 200))
-			drm_err(&dev_priv->drm,
+			drm_err(&i915->drm,
 				"Power state not set for PLL:%d\n", port);
 	}
 
 	/* Disable 10 bit clock */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL_EBB_4(phy, ch));
-	temp &= ~PORT_PLL_10BIT_CLK_ENABLE;
-	intel_de_write(dev_priv, BXT_PORT_PLL_EBB_4(phy, ch), temp);
+	intel_de_rmw(i915, BXT_PORT_PLL_EBB_4(phy, ch),
+		     PORT_PLL_10BIT_CLK_ENABLE, 0);
 
 	/* Write P1 & P2 */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL_EBB_0(phy, ch));
-	temp &= ~(PORT_PLL_P1_MASK | PORT_PLL_P2_MASK);
-	temp |= pll->state.hw_state.ebb0;
-	intel_de_write(dev_priv, BXT_PORT_PLL_EBB_0(phy, ch), temp);
+	intel_de_rmw(i915, BXT_PORT_PLL_EBB_0(phy, ch),
+		     PORT_PLL_P1_MASK | PORT_PLL_P2_MASK, pll->state.hw_state.ebb0);
 
 	/* Write M2 integer */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 0));
-	temp &= ~PORT_PLL_M2_MASK;
-	temp |= pll->state.hw_state.pll0;
-	intel_de_write(dev_priv, BXT_PORT_PLL(phy, ch, 0), temp);
+	intel_de_rmw(i915, BXT_PORT_PLL(phy, ch, 0),
+		     PORT_PLL_M2_INT_MASK, pll->state.hw_state.pll0);
 
 	/* Write N */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 1));
-	temp &= ~PORT_PLL_N_MASK;
-	temp |= pll->state.hw_state.pll1;
-	intel_de_write(dev_priv, BXT_PORT_PLL(phy, ch, 1), temp);
+	intel_de_rmw(i915, BXT_PORT_PLL(phy, ch, 1),
+		     PORT_PLL_N_MASK, pll->state.hw_state.pll1);
 
 	/* Write M2 fraction */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 2));
-	temp &= ~PORT_PLL_M2_FRAC_MASK;
-	temp |= pll->state.hw_state.pll2;
-	intel_de_write(dev_priv, BXT_PORT_PLL(phy, ch, 2), temp);
+	intel_de_rmw(i915, BXT_PORT_PLL(phy, ch, 2),
+		     PORT_PLL_M2_FRAC_MASK, pll->state.hw_state.pll2);
 
 	/* Write M2 fraction enable */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 3));
-	temp &= ~PORT_PLL_M2_FRAC_ENABLE;
-	temp |= pll->state.hw_state.pll3;
-	intel_de_write(dev_priv, BXT_PORT_PLL(phy, ch, 3), temp);
+	intel_de_rmw(i915, BXT_PORT_PLL(phy, ch, 3),
+		     PORT_PLL_M2_FRAC_ENABLE, pll->state.hw_state.pll3);
 
 	/* Write coeff */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 6));
+	temp = intel_de_read(i915, BXT_PORT_PLL(phy, ch, 6));
 	temp &= ~PORT_PLL_PROP_COEFF_MASK;
 	temp &= ~PORT_PLL_INT_COEFF_MASK;
 	temp &= ~PORT_PLL_GAIN_CTL_MASK;
 	temp |= pll->state.hw_state.pll6;
-	intel_de_write(dev_priv, BXT_PORT_PLL(phy, ch, 6), temp);
+	intel_de_write(i915, BXT_PORT_PLL(phy, ch, 6), temp);
 
 	/* Write calibration val */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 8));
-	temp &= ~PORT_PLL_TARGET_CNT_MASK;
-	temp |= pll->state.hw_state.pll8;
-	intel_de_write(dev_priv, BXT_PORT_PLL(phy, ch, 8), temp);
+	intel_de_rmw(i915, BXT_PORT_PLL(phy, ch, 8),
+		     PORT_PLL_TARGET_CNT_MASK, pll->state.hw_state.pll8);
 
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 9));
-	temp &= ~PORT_PLL_LOCK_THRESHOLD_MASK;
-	temp |= pll->state.hw_state.pll9;
-	intel_de_write(dev_priv, BXT_PORT_PLL(phy, ch, 9), temp);
+	intel_de_rmw(i915, BXT_PORT_PLL(phy, ch, 9),
+		     PORT_PLL_LOCK_THRESHOLD_MASK, pll->state.hw_state.pll9);
 
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 10));
+	temp = intel_de_read(i915, BXT_PORT_PLL(phy, ch, 10));
 	temp &= ~PORT_PLL_DCO_AMP_OVR_EN_H;
 	temp &= ~PORT_PLL_DCO_AMP_MASK;
 	temp |= pll->state.hw_state.pll10;
-	intel_de_write(dev_priv, BXT_PORT_PLL(phy, ch, 10), temp);
+	intel_de_write(i915, BXT_PORT_PLL(phy, ch, 10), temp);
 
 	/* Recalibrate with new settings */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL_EBB_4(phy, ch));
+	temp = intel_de_read(i915, BXT_PORT_PLL_EBB_4(phy, ch));
 	temp |= PORT_PLL_RECALIBRATE;
-	intel_de_write(dev_priv, BXT_PORT_PLL_EBB_4(phy, ch), temp);
+	intel_de_write(i915, BXT_PORT_PLL_EBB_4(phy, ch), temp);
 	temp &= ~PORT_PLL_10BIT_CLK_ENABLE;
 	temp |= pll->state.hw_state.ebb4;
-	intel_de_write(dev_priv, BXT_PORT_PLL_EBB_4(phy, ch), temp);
+	intel_de_write(i915, BXT_PORT_PLL_EBB_4(phy, ch), temp);
 
 	/* Enable PLL */
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL_ENABLE(port));
-	temp |= PORT_PLL_ENABLE;
-	intel_de_write(dev_priv, BXT_PORT_PLL_ENABLE(port), temp);
-	intel_de_posting_read(dev_priv, BXT_PORT_PLL_ENABLE(port));
+	intel_de_rmw(i915, BXT_PORT_PLL_ENABLE(port), 0, PORT_PLL_ENABLE);
+	intel_de_posting_read(i915, BXT_PORT_PLL_ENABLE(port));
 
-	if (wait_for_us((intel_de_read(dev_priv, BXT_PORT_PLL_ENABLE(port)) & PORT_PLL_LOCK),
+	if (wait_for_us((intel_de_read(i915, BXT_PORT_PLL_ENABLE(port)) & PORT_PLL_LOCK),
 			200))
-		drm_err(&dev_priv->drm, "PLL %d not locked\n", port);
+		drm_err(&i915->drm, "PLL %d not locked\n", port);
 
-	if (IS_GEMINILAKE(dev_priv)) {
-		temp = intel_de_read(dev_priv, BXT_PORT_TX_DW5_LN0(phy, ch));
+	if (IS_GEMINILAKE(i915)) {
+		temp = intel_de_read(i915, BXT_PORT_TX_DW5_LN0(phy, ch));
 		temp |= DCC_DELAY_RANGE_2;
-		intel_de_write(dev_priv, BXT_PORT_TX_DW5_GRP(phy, ch), temp);
+		intel_de_write(i915, BXT_PORT_TX_DW5_GRP(phy, ch), temp);
 	}
 
 	/*
 	 * While we write to the group register to program all lanes at once we
 	 * can read only lane registers and we pick lanes 0/1 for that.
 	 */
-	temp = intel_de_read(dev_priv, BXT_PORT_PCS_DW12_LN01(phy, ch));
+	temp = intel_de_read(i915, BXT_PORT_PCS_DW12_LN01(phy, ch));
 	temp &= ~LANE_STAGGER_MASK;
 	temp &= ~LANESTAGGER_STRAP_OVRD;
 	temp |= pll->state.hw_state.pcsdw12;
-	intel_de_write(dev_priv, BXT_PORT_PCS_DW12_GRP(phy, ch), temp);
+	intel_de_write(i915, BXT_PORT_PCS_DW12_GRP(phy, ch), temp);
 }
 
-static void bxt_ddi_pll_disable(struct drm_i915_private *dev_priv,
-					struct intel_shared_dpll *pll)
+static void bxt_ddi_pll_disable(struct drm_i915_private *i915,
+				struct intel_shared_dpll *pll)
 {
 	enum port port = (enum port)pll->info->id; /* 1:1 port->PLL mapping */
-	u32 temp;
 
-	temp = intel_de_read(dev_priv, BXT_PORT_PLL_ENABLE(port));
-	temp &= ~PORT_PLL_ENABLE;
-	intel_de_write(dev_priv, BXT_PORT_PLL_ENABLE(port), temp);
-	intel_de_posting_read(dev_priv, BXT_PORT_PLL_ENABLE(port));
+	intel_de_rmw(i915, BXT_PORT_PLL_ENABLE(port), PORT_PLL_ENABLE, 0);
+	intel_de_posting_read(i915, BXT_PORT_PLL_ENABLE(port));
 
-	if (IS_GEMINILAKE(dev_priv)) {
-		temp = intel_de_read(dev_priv, BXT_PORT_PLL_ENABLE(port));
-		temp &= ~PORT_PLL_POWER_ENABLE;
-		intel_de_write(dev_priv, BXT_PORT_PLL_ENABLE(port), temp);
+	if (IS_GEMINILAKE(i915)) {
+		intel_de_rmw(i915, BXT_PORT_PLL_ENABLE(port),
+			     PORT_PLL_POWER_ENABLE, 0);
 
-		if (wait_for_us(!(intel_de_read(dev_priv, BXT_PORT_PLL_ENABLE(port)) &
+		if (wait_for_us(!(intel_de_read(i915, BXT_PORT_PLL_ENABLE(port)) &
 				  PORT_PLL_POWER_STATE), 200))
-			drm_err(&dev_priv->drm,
+			drm_err(&i915->drm,
 				"Power state not reset for PLL:%d\n", port);
 	}
 }
 
-static bool bxt_ddi_pll_get_hw_state(struct drm_i915_private *dev_priv,
-					struct intel_shared_dpll *pll,
-					struct intel_dpll_hw_state *hw_state)
+static bool bxt_ddi_pll_get_hw_state(struct drm_i915_private *i915,
+				     struct intel_shared_dpll *pll,
+				     struct intel_dpll_hw_state *hw_state)
 {
 	enum port port = (enum port)pll->info->id; /* 1:1 port->PLL mapping */
 	intel_wakeref_t wakeref;
@@ -1988,49 +2068,49 @@ static bool bxt_ddi_pll_get_hw_state(struct drm_i915_private *dev_priv,
 	u32 val;
 	bool ret;
 
-	bxt_port_to_phy_channel(dev_priv, port, &phy, &ch);
+	bxt_port_to_phy_channel(i915, port, &phy, &ch);
 
-	wakeref = intel_display_power_get_if_enabled(dev_priv,
+	wakeref = intel_display_power_get_if_enabled(i915,
 						     POWER_DOMAIN_DISPLAY_CORE);
 	if (!wakeref)
 		return false;
 
 	ret = false;
 
-	val = intel_de_read(dev_priv, BXT_PORT_PLL_ENABLE(port));
+	val = intel_de_read(i915, BXT_PORT_PLL_ENABLE(port));
 	if (!(val & PORT_PLL_ENABLE))
 		goto out;
 
-	hw_state->ebb0 = intel_de_read(dev_priv, BXT_PORT_PLL_EBB_0(phy, ch));
+	hw_state->ebb0 = intel_de_read(i915, BXT_PORT_PLL_EBB_0(phy, ch));
 	hw_state->ebb0 &= PORT_PLL_P1_MASK | PORT_PLL_P2_MASK;
 
-	hw_state->ebb4 = intel_de_read(dev_priv, BXT_PORT_PLL_EBB_4(phy, ch));
+	hw_state->ebb4 = intel_de_read(i915, BXT_PORT_PLL_EBB_4(phy, ch));
 	hw_state->ebb4 &= PORT_PLL_10BIT_CLK_ENABLE;
 
-	hw_state->pll0 = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 0));
-	hw_state->pll0 &= PORT_PLL_M2_MASK;
+	hw_state->pll0 = intel_de_read(i915, BXT_PORT_PLL(phy, ch, 0));
+	hw_state->pll0 &= PORT_PLL_M2_INT_MASK;
 
-	hw_state->pll1 = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 1));
+	hw_state->pll1 = intel_de_read(i915, BXT_PORT_PLL(phy, ch, 1));
 	hw_state->pll1 &= PORT_PLL_N_MASK;
 
-	hw_state->pll2 = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 2));
+	hw_state->pll2 = intel_de_read(i915, BXT_PORT_PLL(phy, ch, 2));
 	hw_state->pll2 &= PORT_PLL_M2_FRAC_MASK;
 
-	hw_state->pll3 = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 3));
+	hw_state->pll3 = intel_de_read(i915, BXT_PORT_PLL(phy, ch, 3));
 	hw_state->pll3 &= PORT_PLL_M2_FRAC_ENABLE;
 
-	hw_state->pll6 = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 6));
+	hw_state->pll6 = intel_de_read(i915, BXT_PORT_PLL(phy, ch, 6));
 	hw_state->pll6 &= PORT_PLL_PROP_COEFF_MASK |
 			  PORT_PLL_INT_COEFF_MASK |
 			  PORT_PLL_GAIN_CTL_MASK;
 
-	hw_state->pll8 = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 8));
+	hw_state->pll8 = intel_de_read(i915, BXT_PORT_PLL(phy, ch, 8));
 	hw_state->pll8 &= PORT_PLL_TARGET_CNT_MASK;
 
-	hw_state->pll9 = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 9));
+	hw_state->pll9 = intel_de_read(i915, BXT_PORT_PLL(phy, ch, 9));
 	hw_state->pll9 &= PORT_PLL_LOCK_THRESHOLD_MASK;
 
-	hw_state->pll10 = intel_de_read(dev_priv, BXT_PORT_PLL(phy, ch, 10));
+	hw_state->pll10 = intel_de_read(i915, BXT_PORT_PLL(phy, ch, 10));
 	hw_state->pll10 &= PORT_PLL_DCO_AMP_OVR_EN_H |
 			   PORT_PLL_DCO_AMP_MASK;
 
@@ -2039,100 +2119,77 @@ static bool bxt_ddi_pll_get_hw_state(struct drm_i915_private *dev_priv,
 	 * can read only lane registers. We configure all lanes the same way, so
 	 * here just read out lanes 0/1 and output a note if lanes 2/3 differ.
 	 */
-	hw_state->pcsdw12 = intel_de_read(dev_priv,
+	hw_state->pcsdw12 = intel_de_read(i915,
 					  BXT_PORT_PCS_DW12_LN01(phy, ch));
-	if (intel_de_read(dev_priv, BXT_PORT_PCS_DW12_LN23(phy, ch)) != hw_state->pcsdw12)
-		drm_dbg(&dev_priv->drm,
+	if (intel_de_read(i915, BXT_PORT_PCS_DW12_LN23(phy, ch)) != hw_state->pcsdw12)
+		drm_dbg(&i915->drm,
 			"lane stagger config different for lane 01 (%08x) and 23 (%08x)\n",
 			hw_state->pcsdw12,
-			intel_de_read(dev_priv,
+			intel_de_read(i915,
 				      BXT_PORT_PCS_DW12_LN23(phy, ch)));
 	hw_state->pcsdw12 &= LANE_STAGGER_MASK | LANESTAGGER_STRAP_OVRD;
 
 	ret = true;
 
 out:
-	intel_display_power_put(dev_priv, POWER_DOMAIN_DISPLAY_CORE, wakeref);
+	intel_display_power_put(i915, POWER_DOMAIN_DISPLAY_CORE, wakeref);
 
 	return ret;
 }
 
-/* bxt clock parameters */
-struct bxt_clk_div {
-	int clock;
-	u32 p1;
-	u32 p2;
-	u32 m2_int;
-	u32 m2_frac;
-	bool m2_frac_en;
-	u32 n;
-
-	int vco;
-};
-
 /* pre-calculated values for DP linkrates */
-static const struct bxt_clk_div bxt_dp_clk_val[] = {
-	{162000, 4, 2, 32, 1677722, 1, 1},
-	{270000, 4, 1, 27,       0, 0, 1},
-	{540000, 2, 1, 27,       0, 0, 1},
-	{216000, 3, 2, 32, 1677722, 1, 1},
-	{243000, 4, 1, 24, 1258291, 1, 1},
-	{324000, 4, 1, 32, 1677722, 1, 1},
-	{432000, 3, 1, 32, 1677722, 1, 1}
+static const struct dpll bxt_dp_clk_val[] = {
+	/* m2 is .22 binary fixed point */
+	{ .dot = 162000, .p1 = 4, .p2 = 2, .n = 1, .m1 = 2, .m2 = 0x819999a /* 32.4 */ },
+	{ .dot = 270000, .p1 = 4, .p2 = 1, .n = 1, .m1 = 2, .m2 = 0x6c00000 /* 27.0 */ },
+	{ .dot = 540000, .p1 = 2, .p2 = 1, .n = 1, .m1 = 2, .m2 = 0x6c00000 /* 27.0 */ },
+	{ .dot = 216000, .p1 = 3, .p2 = 2, .n = 1, .m1 = 2, .m2 = 0x819999a /* 32.4 */ },
+	{ .dot = 243000, .p1 = 4, .p2 = 1, .n = 1, .m1 = 2, .m2 = 0x6133333 /* 24.3 */ },
+	{ .dot = 324000, .p1 = 4, .p2 = 1, .n = 1, .m1 = 2, .m2 = 0x819999a /* 32.4 */ },
+	{ .dot = 432000, .p1 = 3, .p2 = 1, .n = 1, .m1 = 2, .m2 = 0x819999a /* 32.4 */ },
 };
 
-static bool
+static int
 bxt_ddi_hdmi_pll_dividers(struct intel_crtc_state *crtc_state,
-			  struct bxt_clk_div *clk_div)
+			  struct dpll *clk_div)
 {
 	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
-	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
-	struct dpll best_clock;
 
 	/* Calculate HDMI div */
 	/*
 	 * FIXME: tie the following calculation into
 	 * i9xx_crtc_compute_clock
 	 */
-	if (!bxt_find_best_dpll(crtc_state, &best_clock)) {
-		drm_dbg(&i915->drm, "no PLL dividers found for clock %d pipe %c\n",
-			crtc_state->port_clock,
-			pipe_name(crtc->pipe));
-		return false;
-	}
+	if (!bxt_find_best_dpll(crtc_state, clk_div))
+		return -EINVAL;
 
-	clk_div->p1 = best_clock.p1;
-	clk_div->p2 = best_clock.p2;
-	drm_WARN_ON(&i915->drm, best_clock.m1 != 2);
-	clk_div->n = best_clock.n;
-	clk_div->m2_int = best_clock.m2 >> 22;
-	clk_div->m2_frac = best_clock.m2 & ((1 << 22) - 1);
-	clk_div->m2_frac_en = clk_div->m2_frac != 0;
+	drm_WARN_ON(&i915->drm, clk_div->m1 != 2);
 
-	clk_div->vco = best_clock.vco;
-
-	return true;
+	return 0;
 }
 
 static void bxt_ddi_dp_pll_dividers(struct intel_crtc_state *crtc_state,
-				    struct bxt_clk_div *clk_div)
+				    struct dpll *clk_div)
 {
-	int clock = crtc_state->port_clock;
+	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
 	int i;
 
 	*clk_div = bxt_dp_clk_val[0];
 	for (i = 0; i < ARRAY_SIZE(bxt_dp_clk_val); ++i) {
-		if (bxt_dp_clk_val[i].clock == clock) {
+		if (crtc_state->port_clock == bxt_dp_clk_val[i].dot) {
 			*clk_div = bxt_dp_clk_val[i];
 			break;
 		}
 	}
 
-	clk_div->vco = clock * 10 / 2 * clk_div->p1 * clk_div->p2;
+	chv_calc_dpll_params(i915->display.dpll.ref_clks.nssc, clk_div);
+
+	drm_WARN_ON(&i915->drm, clk_div->vco == 0 ||
+		    clk_div->dot != crtc_state->port_clock);
 }
 
-static bool bxt_ddi_set_dpll_hw_state(struct intel_crtc_state *crtc_state,
-				      const struct bxt_clk_div *clk_div)
+static int bxt_ddi_set_dpll_hw_state(struct intel_crtc_state *crtc_state,
+				     const struct dpll *clk_div)
 {
 	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
 	struct intel_dpll_hw_state *dpll_hw_state = &crtc_state->dpll_hw_state;
@@ -2140,8 +2197,6 @@ static bool bxt_ddi_set_dpll_hw_state(struct intel_crtc_state *crtc_state,
 	int vco = clk_div->vco;
 	u32 prop_coef, int_coef, gain_ctl, targ_cnt;
 	u32 lanestagger;
-
-	memset(dpll_hw_state, 0, sizeof(*dpll_hw_state));
 
 	if (vco >= 6200000 && vco <= 6700000) {
 		prop_coef = 4;
@@ -2161,7 +2216,7 @@ static bool bxt_ddi_set_dpll_hw_state(struct intel_crtc_state *crtc_state,
 		targ_cnt = 9;
 	} else {
 		drm_err(&i915->drm, "Invalid VCO\n");
-		return false;
+		return -EINVAL;
 	}
 
 	if (clock > 270000)
@@ -2176,49 +2231,29 @@ static bool bxt_ddi_set_dpll_hw_state(struct intel_crtc_state *crtc_state,
 		lanestagger = 0x02;
 
 	dpll_hw_state->ebb0 = PORT_PLL_P1(clk_div->p1) | PORT_PLL_P2(clk_div->p2);
-	dpll_hw_state->pll0 = clk_div->m2_int;
+	dpll_hw_state->pll0 = PORT_PLL_M2_INT(clk_div->m2 >> 22);
 	dpll_hw_state->pll1 = PORT_PLL_N(clk_div->n);
-	dpll_hw_state->pll2 = clk_div->m2_frac;
+	dpll_hw_state->pll2 = PORT_PLL_M2_FRAC(clk_div->m2 & 0x3fffff);
 
-	if (clk_div->m2_frac_en)
+	if (clk_div->m2 & 0x3fffff)
 		dpll_hw_state->pll3 = PORT_PLL_M2_FRAC_ENABLE;
 
-	dpll_hw_state->pll6 = prop_coef | PORT_PLL_INT_COEFF(int_coef);
-	dpll_hw_state->pll6 |= PORT_PLL_GAIN_CTL(gain_ctl);
+	dpll_hw_state->pll6 = PORT_PLL_PROP_COEFF(prop_coef) |
+		PORT_PLL_INT_COEFF(int_coef) |
+		PORT_PLL_GAIN_CTL(gain_ctl);
 
-	dpll_hw_state->pll8 = targ_cnt;
+	dpll_hw_state->pll8 = PORT_PLL_TARGET_CNT(targ_cnt);
 
-	dpll_hw_state->pll9 = 5 << PORT_PLL_LOCK_THRESHOLD_SHIFT;
+	dpll_hw_state->pll9 = PORT_PLL_LOCK_THRESHOLD(5);
 
-	dpll_hw_state->pll10 =
-		PORT_PLL_DCO_AMP(PORT_PLL_DCO_AMP_DEFAULT)
-		| PORT_PLL_DCO_AMP_OVR_EN_H;
+	dpll_hw_state->pll10 = PORT_PLL_DCO_AMP(15) |
+		PORT_PLL_DCO_AMP_OVR_EN_H;
 
 	dpll_hw_state->ebb4 = PORT_PLL_10BIT_CLK_ENABLE;
 
 	dpll_hw_state->pcsdw12 = LANESTAGGER_STRAP_OVRD | lanestagger;
 
-	return true;
-}
-
-static bool
-bxt_ddi_dp_set_dpll_hw_state(struct intel_crtc_state *crtc_state)
-{
-	struct bxt_clk_div clk_div = {};
-
-	bxt_ddi_dp_pll_dividers(crtc_state, &clk_div);
-
-	return bxt_ddi_set_dpll_hw_state(crtc_state, &clk_div);
-}
-
-static bool
-bxt_ddi_hdmi_set_dpll_hw_state(struct intel_crtc_state *crtc_state)
-{
-	struct bxt_clk_div clk_div = {};
-
-	bxt_ddi_hdmi_pll_dividers(crtc_state, &clk_div);
-
-	return bxt_ddi_set_dpll_hw_state(crtc_state, &clk_div);
+	return 0;
 }
 
 static int bxt_ddi_pll_get_freq(struct drm_i915_private *i915,
@@ -2228,39 +2263,75 @@ static int bxt_ddi_pll_get_freq(struct drm_i915_private *i915,
 	struct dpll clock;
 
 	clock.m1 = 2;
-	clock.m2 = (pll_state->pll0 & PORT_PLL_M2_MASK) << 22;
+	clock.m2 = REG_FIELD_GET(PORT_PLL_M2_INT_MASK, pll_state->pll0) << 22;
 	if (pll_state->pll3 & PORT_PLL_M2_FRAC_ENABLE)
-		clock.m2 |= pll_state->pll2 & PORT_PLL_M2_FRAC_MASK;
-	clock.n = (pll_state->pll1 & PORT_PLL_N_MASK) >> PORT_PLL_N_SHIFT;
-	clock.p1 = (pll_state->ebb0 & PORT_PLL_P1_MASK) >> PORT_PLL_P1_SHIFT;
-	clock.p2 = (pll_state->ebb0 & PORT_PLL_P2_MASK) >> PORT_PLL_P2_SHIFT;
+		clock.m2 |= REG_FIELD_GET(PORT_PLL_M2_FRAC_MASK, pll_state->pll2);
+	clock.n = REG_FIELD_GET(PORT_PLL_N_MASK, pll_state->pll1);
+	clock.p1 = REG_FIELD_GET(PORT_PLL_P1_MASK, pll_state->ebb0);
+	clock.p2 = REG_FIELD_GET(PORT_PLL_P2_MASK, pll_state->ebb0);
 
-	return chv_calc_dpll_params(i915->dpll.ref_clks.nssc, &clock);
+	return chv_calc_dpll_params(i915->display.dpll.ref_clks.nssc, &clock);
 }
 
-static bool bxt_get_dpll(struct intel_atomic_state *state,
-			 struct intel_crtc *crtc,
-			 struct intel_encoder *encoder)
+static int
+bxt_ddi_dp_set_dpll_hw_state(struct intel_crtc_state *crtc_state)
+{
+	struct dpll clk_div = {};
+
+	bxt_ddi_dp_pll_dividers(crtc_state, &clk_div);
+
+	return bxt_ddi_set_dpll_hw_state(crtc_state, &clk_div);
+}
+
+static int
+bxt_ddi_hdmi_set_dpll_hw_state(struct intel_crtc_state *crtc_state)
+{
+	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
+	struct dpll clk_div = {};
+	int ret;
+
+	bxt_ddi_hdmi_pll_dividers(crtc_state, &clk_div);
+
+	ret = bxt_ddi_set_dpll_hw_state(crtc_state, &clk_div);
+	if (ret)
+		return ret;
+
+	crtc_state->port_clock = bxt_ddi_pll_get_freq(i915, NULL,
+						      &crtc_state->dpll_hw_state);
+
+	return 0;
+}
+
+static int bxt_compute_dpll(struct intel_atomic_state *state,
+			    struct intel_crtc *crtc,
+			    struct intel_encoder *encoder)
 {
 	struct intel_crtc_state *crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
-	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
+
+	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_HDMI))
+		return bxt_ddi_hdmi_set_dpll_hw_state(crtc_state);
+	else if (intel_crtc_has_dp_encoder(crtc_state))
+		return bxt_ddi_dp_set_dpll_hw_state(crtc_state);
+	else
+		return -EINVAL;
+}
+
+static int bxt_get_dpll(struct intel_atomic_state *state,
+			struct intel_crtc *crtc,
+			struct intel_encoder *encoder)
+{
+	struct intel_crtc_state *crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
 	struct intel_shared_dpll *pll;
 	enum intel_dpll_id id;
 
-	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_HDMI) &&
-	    !bxt_ddi_hdmi_set_dpll_hw_state(crtc_state))
-		return false;
-
-	if (intel_crtc_has_dp_encoder(crtc_state) &&
-	    !bxt_ddi_dp_set_dpll_hw_state(crtc_state))
-		return false;
-
 	/* 1:1 mapping between ports and PLLs */
 	id = (enum intel_dpll_id) encoder->port;
-	pll = intel_get_shared_dpll_by_id(dev_priv, id);
+	pll = intel_get_shared_dpll_by_id(i915, id);
 
-	drm_dbg_kms(&dev_priv->drm, "[CRTC:%d:%s] using pre-allocated %s\n",
+	drm_dbg_kms(&i915->drm, "[CRTC:%d:%s] using pre-allocated %s\n",
 		    crtc->base.base.id, crtc->base.name, pll->info->name);
 
 	intel_reference_shared_dpll(state, crtc,
@@ -2268,20 +2339,20 @@ static bool bxt_get_dpll(struct intel_atomic_state *state,
 
 	crtc_state->shared_dpll = pll;
 
-	return true;
+	return 0;
 }
 
 static void bxt_update_dpll_ref_clks(struct drm_i915_private *i915)
 {
-	i915->dpll.ref_clks.ssc = 100000;
-	i915->dpll.ref_clks.nssc = 100000;
+	i915->display.dpll.ref_clks.ssc = 100000;
+	i915->display.dpll.ref_clks.nssc = 100000;
 	/* DSI non-SSC ref 19.2MHz */
 }
 
-static void bxt_dump_hw_state(struct drm_i915_private *dev_priv,
+static void bxt_dump_hw_state(struct drm_i915_private *i915,
 			      const struct intel_dpll_hw_state *hw_state)
 {
-	drm_dbg_kms(&dev_priv->drm, "dpll_hw_state: ebb0: 0x%x, ebb4: 0x%x,"
+	drm_dbg_kms(&i915->drm, "dpll_hw_state: ebb0: 0x%x, ebb4: 0x%x,"
 		    "pll0: 0x%x, pll1: 0x%x, pll2: 0x%x, pll3: 0x%x, "
 		    "pll6: 0x%x, pll8: 0x%x, pll9: 0x%x, pll10: 0x%x, pcsdw12: 0x%x\n",
 		    hw_state->ebb0,
@@ -2313,166 +2384,14 @@ static const struct dpll_info bxt_plls[] = {
 
 static const struct intel_dpll_mgr bxt_pll_mgr = {
 	.dpll_info = bxt_plls,
+	.compute_dplls = bxt_compute_dpll,
 	.get_dplls = bxt_get_dpll,
 	.put_dplls = intel_put_dpll,
 	.update_ref_clks = bxt_update_dpll_ref_clks,
 	.dump_hw_state = bxt_dump_hw_state,
 };
 
-static void cnl_ddi_pll_enable(struct drm_i915_private *dev_priv,
-			       struct intel_shared_dpll *pll)
-{
-	const enum intel_dpll_id id = pll->info->id;
-	u32 val;
-
-	/* 1. Enable DPLL power in DPLL_ENABLE. */
-	val = intel_de_read(dev_priv, CNL_DPLL_ENABLE(id));
-	val |= PLL_POWER_ENABLE;
-	intel_de_write(dev_priv, CNL_DPLL_ENABLE(id), val);
-
-	/* 2. Wait for DPLL power state enabled in DPLL_ENABLE. */
-	if (intel_de_wait_for_set(dev_priv, CNL_DPLL_ENABLE(id),
-				  PLL_POWER_STATE, 5))
-		drm_err(&dev_priv->drm, "PLL %d Power not enabled\n", id);
-
-	/*
-	 * 3. Configure DPLL_CFGCR0 to set SSC enable/disable,
-	 * select DP mode, and set DP link rate.
-	 */
-	val = pll->state.hw_state.cfgcr0;
-	intel_de_write(dev_priv, CNL_DPLL_CFGCR0(id), val);
-
-	/* 4. Reab back to ensure writes completed */
-	intel_de_posting_read(dev_priv, CNL_DPLL_CFGCR0(id));
-
-	/* 3. Configure DPLL_CFGCR0 */
-	/* Avoid touch CFGCR1 if HDMI mode is not enabled */
-	if (pll->state.hw_state.cfgcr0 & DPLL_CFGCR0_HDMI_MODE) {
-		val = pll->state.hw_state.cfgcr1;
-		intel_de_write(dev_priv, CNL_DPLL_CFGCR1(id), val);
-		/* 4. Reab back to ensure writes completed */
-		intel_de_posting_read(dev_priv, CNL_DPLL_CFGCR1(id));
-	}
-
-	/*
-	 * 5. If the frequency will result in a change to the voltage
-	 * requirement, follow the Display Voltage Frequency Switching
-	 * Sequence Before Frequency Change
-	 *
-	 * Note: DVFS is actually handled via the cdclk code paths,
-	 * hence we do nothing here.
-	 */
-
-	/* 6. Enable DPLL in DPLL_ENABLE. */
-	val = intel_de_read(dev_priv, CNL_DPLL_ENABLE(id));
-	val |= PLL_ENABLE;
-	intel_de_write(dev_priv, CNL_DPLL_ENABLE(id), val);
-
-	/* 7. Wait for PLL lock status in DPLL_ENABLE. */
-	if (intel_de_wait_for_set(dev_priv, CNL_DPLL_ENABLE(id), PLL_LOCK, 5))
-		drm_err(&dev_priv->drm, "PLL %d not locked\n", id);
-
-	/*
-	 * 8. If the frequency will result in a change to the voltage
-	 * requirement, follow the Display Voltage Frequency Switching
-	 * Sequence After Frequency Change
-	 *
-	 * Note: DVFS is actually handled via the cdclk code paths,
-	 * hence we do nothing here.
-	 */
-
-	/*
-	 * 9. turn on the clock for the DDI and map the DPLL to the DDI
-	 * Done at intel_ddi_clk_select
-	 */
-}
-
-static void cnl_ddi_pll_disable(struct drm_i915_private *dev_priv,
-				struct intel_shared_dpll *pll)
-{
-	const enum intel_dpll_id id = pll->info->id;
-	u32 val;
-
-	/*
-	 * 1. Configure DPCLKA_CFGCR0 to turn off the clock for the DDI.
-	 * Done at intel_ddi_post_disable
-	 */
-
-	/*
-	 * 2. If the frequency will result in a change to the voltage
-	 * requirement, follow the Display Voltage Frequency Switching
-	 * Sequence Before Frequency Change
-	 *
-	 * Note: DVFS is actually handled via the cdclk code paths,
-	 * hence we do nothing here.
-	 */
-
-	/* 3. Disable DPLL through DPLL_ENABLE. */
-	val = intel_de_read(dev_priv, CNL_DPLL_ENABLE(id));
-	val &= ~PLL_ENABLE;
-	intel_de_write(dev_priv, CNL_DPLL_ENABLE(id), val);
-
-	/* 4. Wait for PLL not locked status in DPLL_ENABLE. */
-	if (intel_de_wait_for_clear(dev_priv, CNL_DPLL_ENABLE(id), PLL_LOCK, 5))
-		drm_err(&dev_priv->drm, "PLL %d locked\n", id);
-
-	/*
-	 * 5. If the frequency will result in a change to the voltage
-	 * requirement, follow the Display Voltage Frequency Switching
-	 * Sequence After Frequency Change
-	 *
-	 * Note: DVFS is actually handled via the cdclk code paths,
-	 * hence we do nothing here.
-	 */
-
-	/* 6. Disable DPLL power in DPLL_ENABLE. */
-	val = intel_de_read(dev_priv, CNL_DPLL_ENABLE(id));
-	val &= ~PLL_POWER_ENABLE;
-	intel_de_write(dev_priv, CNL_DPLL_ENABLE(id), val);
-
-	/* 7. Wait for DPLL power state disabled in DPLL_ENABLE. */
-	if (intel_de_wait_for_clear(dev_priv, CNL_DPLL_ENABLE(id),
-				    PLL_POWER_STATE, 5))
-		drm_err(&dev_priv->drm, "PLL %d Power not disabled\n", id);
-}
-
-static bool cnl_ddi_pll_get_hw_state(struct drm_i915_private *dev_priv,
-				     struct intel_shared_dpll *pll,
-				     struct intel_dpll_hw_state *hw_state)
-{
-	const enum intel_dpll_id id = pll->info->id;
-	intel_wakeref_t wakeref;
-	u32 val;
-	bool ret;
-
-	wakeref = intel_display_power_get_if_enabled(dev_priv,
-						     POWER_DOMAIN_DISPLAY_CORE);
-	if (!wakeref)
-		return false;
-
-	ret = false;
-
-	val = intel_de_read(dev_priv, CNL_DPLL_ENABLE(id));
-	if (!(val & PLL_ENABLE))
-		goto out;
-
-	val = intel_de_read(dev_priv, CNL_DPLL_CFGCR0(id));
-	hw_state->cfgcr0 = val;
-
-	/* avoid reading back stale values if HDMI mode is not enabled */
-	if (val & DPLL_CFGCR0_HDMI_MODE) {
-		hw_state->cfgcr1 = intel_de_read(dev_priv,
-						 CNL_DPLL_CFGCR1(id));
-	}
-	ret = true;
-
-out:
-	intel_display_power_put(dev_priv, POWER_DOMAIN_DISPLAY_CORE, wakeref);
-
-	return ret;
-}
-
-static void cnl_wrpll_get_multipliers(int bestdiv, int *pdiv,
+static void icl_wrpll_get_multipliers(int bestdiv, int *pdiv,
 				      int *qdiv, int *kdiv)
 {
 	/* even dividers */
@@ -2511,7 +2430,7 @@ static void cnl_wrpll_get_multipliers(int bestdiv, int *pdiv,
 	}
 }
 
-static void cnl_wrpll_params_populate(struct skl_wrpll_params *params,
+static void icl_wrpll_params_populate(struct skl_wrpll_params *params,
 				      u32 dco_freq, u32 ref_freq,
 				      int pdiv, int qdiv, int kdiv)
 {
@@ -2559,348 +2478,18 @@ static void cnl_wrpll_params_populate(struct skl_wrpll_params *params,
 	params->dco_fraction = dco & 0x7fff;
 }
 
-static bool
-__cnl_ddi_calculate_wrpll(struct intel_crtc_state *crtc_state,
-			  struct skl_wrpll_params *wrpll_params,
-			  int ref_clock)
-{
-	u32 afe_clock = crtc_state->port_clock * 5;
-	u32 dco_min = 7998000;
-	u32 dco_max = 10000000;
-	u32 dco_mid = (dco_min + dco_max) / 2;
-	static const int dividers[] = {  2,  4,  6,  8, 10, 12,  14,  16,
-					 18, 20, 24, 28, 30, 32,  36,  40,
-					 42, 44, 48, 50, 52, 54,  56,  60,
-					 64, 66, 68, 70, 72, 76,  78,  80,
-					 84, 88, 90, 92, 96, 98, 100, 102,
-					  3,  5,  7,  9, 15, 21 };
-	u32 dco, best_dco = 0, dco_centrality = 0;
-	u32 best_dco_centrality = U32_MAX; /* Spec meaning of 999999 MHz */
-	int d, best_div = 0, pdiv = 0, qdiv = 0, kdiv = 0;
-
-	for (d = 0; d < ARRAY_SIZE(dividers); d++) {
-		dco = afe_clock * dividers[d];
-
-		if ((dco <= dco_max) && (dco >= dco_min)) {
-			dco_centrality = abs(dco - dco_mid);
-
-			if (dco_centrality < best_dco_centrality) {
-				best_dco_centrality = dco_centrality;
-				best_div = dividers[d];
-				best_dco = dco;
-			}
-		}
-	}
-
-	if (best_div == 0)
-		return false;
-
-	cnl_wrpll_get_multipliers(best_div, &pdiv, &qdiv, &kdiv);
-	cnl_wrpll_params_populate(wrpll_params, best_dco, ref_clock,
-				  pdiv, qdiv, kdiv);
-
-	return true;
-}
-
-static bool
-cnl_ddi_calculate_wrpll(struct intel_crtc_state *crtc_state,
-			struct skl_wrpll_params *wrpll_params)
-{
-	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
-
-	return __cnl_ddi_calculate_wrpll(crtc_state, wrpll_params,
-					 i915->dpll.ref_clks.nssc);
-}
-
-static bool cnl_ddi_hdmi_pll_dividers(struct intel_crtc_state *crtc_state)
-{
-	u32 cfgcr0, cfgcr1;
-	struct skl_wrpll_params wrpll_params = { 0, };
-
-	cfgcr0 = DPLL_CFGCR0_HDMI_MODE;
-
-	if (!cnl_ddi_calculate_wrpll(crtc_state, &wrpll_params))
-		return false;
-
-	cfgcr0 |= DPLL_CFGCR0_DCO_FRACTION(wrpll_params.dco_fraction) |
-		wrpll_params.dco_integer;
-
-	cfgcr1 = DPLL_CFGCR1_QDIV_RATIO(wrpll_params.qdiv_ratio) |
-		DPLL_CFGCR1_QDIV_MODE(wrpll_params.qdiv_mode) |
-		DPLL_CFGCR1_KDIV(wrpll_params.kdiv) |
-		DPLL_CFGCR1_PDIV(wrpll_params.pdiv) |
-		DPLL_CFGCR1_CENTRAL_FREQ;
-
-	memset(&crtc_state->dpll_hw_state, 0,
-	       sizeof(crtc_state->dpll_hw_state));
-
-	crtc_state->dpll_hw_state.cfgcr0 = cfgcr0;
-	crtc_state->dpll_hw_state.cfgcr1 = cfgcr1;
-	return true;
-}
-
 /*
- * Display WA #22010492432: ehl, tgl
+ * Display WA #22010492432: ehl, tgl, adl-s, adl-p
  * Program half of the nominal DCO divider fraction value.
  */
 static bool
 ehl_combo_pll_div_frac_wa_needed(struct drm_i915_private *i915)
 {
-	return ((IS_PLATFORM(i915, INTEL_ELKHARTLAKE) &&
-		 IS_JSL_EHL_REVID(i915, EHL_REVID_B0, REVID_FOREVER)) ||
-		 IS_TIGERLAKE(i915)) &&
-		 i915->dpll.ref_clks.nssc == 38400;
+	return (((IS_ELKHARTLAKE(i915) || IS_JASPERLAKE(i915)) &&
+		 IS_DISPLAY_STEP(i915, STEP_B0, STEP_FOREVER)) ||
+		 IS_TIGERLAKE(i915) || IS_ALDERLAKE_S(i915) || IS_ALDERLAKE_P(i915)) &&
+		 i915->display.dpll.ref_clks.nssc == 38400;
 }
-
-static int __cnl_ddi_wrpll_get_freq(struct drm_i915_private *dev_priv,
-				    const struct intel_shared_dpll *pll,
-				    const struct intel_dpll_hw_state *pll_state,
-				    int ref_clock)
-{
-	u32 dco_fraction;
-	u32 p0, p1, p2, dco_freq;
-
-	p0 = pll_state->cfgcr1 & DPLL_CFGCR1_PDIV_MASK;
-	p2 = pll_state->cfgcr1 & DPLL_CFGCR1_KDIV_MASK;
-
-	if (pll_state->cfgcr1 & DPLL_CFGCR1_QDIV_MODE(1))
-		p1 = (pll_state->cfgcr1 & DPLL_CFGCR1_QDIV_RATIO_MASK) >>
-			DPLL_CFGCR1_QDIV_RATIO_SHIFT;
-	else
-		p1 = 1;
-
-
-	switch (p0) {
-	case DPLL_CFGCR1_PDIV_2:
-		p0 = 2;
-		break;
-	case DPLL_CFGCR1_PDIV_3:
-		p0 = 3;
-		break;
-	case DPLL_CFGCR1_PDIV_5:
-		p0 = 5;
-		break;
-	case DPLL_CFGCR1_PDIV_7:
-		p0 = 7;
-		break;
-	}
-
-	switch (p2) {
-	case DPLL_CFGCR1_KDIV_1:
-		p2 = 1;
-		break;
-	case DPLL_CFGCR1_KDIV_2:
-		p2 = 2;
-		break;
-	case DPLL_CFGCR1_KDIV_3:
-		p2 = 3;
-		break;
-	}
-
-	dco_freq = (pll_state->cfgcr0 & DPLL_CFGCR0_DCO_INTEGER_MASK) *
-		   ref_clock;
-
-	dco_fraction = (pll_state->cfgcr0 & DPLL_CFGCR0_DCO_FRACTION_MASK) >>
-		       DPLL_CFGCR0_DCO_FRACTION_SHIFT;
-
-	if (ehl_combo_pll_div_frac_wa_needed(dev_priv))
-		dco_fraction *= 2;
-
-	dco_freq += (dco_fraction * ref_clock) / 0x8000;
-
-	if (drm_WARN_ON(&dev_priv->drm, p0 == 0 || p1 == 0 || p2 == 0))
-		return 0;
-
-	return dco_freq / (p0 * p1 * p2 * 5);
-}
-
-static int cnl_ddi_wrpll_get_freq(struct drm_i915_private *i915,
-				  const struct intel_shared_dpll *pll,
-				  const struct intel_dpll_hw_state *pll_state)
-{
-	return __cnl_ddi_wrpll_get_freq(i915, pll, pll_state,
-					i915->dpll.ref_clks.nssc);
-}
-
-static bool
-cnl_ddi_dp_set_dpll_hw_state(struct intel_crtc_state *crtc_state)
-{
-	u32 cfgcr0;
-
-	cfgcr0 = DPLL_CFGCR0_SSC_ENABLE;
-
-	switch (crtc_state->port_clock / 2) {
-	case 81000:
-		cfgcr0 |= DPLL_CFGCR0_LINK_RATE_810;
-		break;
-	case 135000:
-		cfgcr0 |= DPLL_CFGCR0_LINK_RATE_1350;
-		break;
-	case 270000:
-		cfgcr0 |= DPLL_CFGCR0_LINK_RATE_2700;
-		break;
-		/* eDP 1.4 rates */
-	case 162000:
-		cfgcr0 |= DPLL_CFGCR0_LINK_RATE_1620;
-		break;
-	case 108000:
-		cfgcr0 |= DPLL_CFGCR0_LINK_RATE_1080;
-		break;
-	case 216000:
-		cfgcr0 |= DPLL_CFGCR0_LINK_RATE_2160;
-		break;
-	case 324000:
-		/* Some SKUs may require elevated I/O voltage to support this */
-		cfgcr0 |= DPLL_CFGCR0_LINK_RATE_3240;
-		break;
-	case 405000:
-		/* Some SKUs may require elevated I/O voltage to support this */
-		cfgcr0 |= DPLL_CFGCR0_LINK_RATE_4050;
-		break;
-	}
-
-	memset(&crtc_state->dpll_hw_state, 0,
-	       sizeof(crtc_state->dpll_hw_state));
-
-	crtc_state->dpll_hw_state.cfgcr0 = cfgcr0;
-
-	return true;
-}
-
-static int cnl_ddi_lcpll_get_freq(struct drm_i915_private *i915,
-				  const struct intel_shared_dpll *pll,
-				  const struct intel_dpll_hw_state *pll_state)
-{
-	int link_clock = 0;
-
-	switch (pll_state->cfgcr0 & DPLL_CFGCR0_LINK_RATE_MASK) {
-	case DPLL_CFGCR0_LINK_RATE_810:
-		link_clock = 81000;
-		break;
-	case DPLL_CFGCR0_LINK_RATE_1080:
-		link_clock = 108000;
-		break;
-	case DPLL_CFGCR0_LINK_RATE_1350:
-		link_clock = 135000;
-		break;
-	case DPLL_CFGCR0_LINK_RATE_1620:
-		link_clock = 162000;
-		break;
-	case DPLL_CFGCR0_LINK_RATE_2160:
-		link_clock = 216000;
-		break;
-	case DPLL_CFGCR0_LINK_RATE_2700:
-		link_clock = 270000;
-		break;
-	case DPLL_CFGCR0_LINK_RATE_3240:
-		link_clock = 324000;
-		break;
-	case DPLL_CFGCR0_LINK_RATE_4050:
-		link_clock = 405000;
-		break;
-	default:
-		drm_WARN(&i915->drm, 1, "Unsupported link rate\n");
-		break;
-	}
-
-	return link_clock * 2;
-}
-
-static bool cnl_get_dpll(struct intel_atomic_state *state,
-			 struct intel_crtc *crtc,
-			 struct intel_encoder *encoder)
-{
-	struct intel_crtc_state *crtc_state =
-		intel_atomic_get_new_crtc_state(state, crtc);
-	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
-	struct intel_shared_dpll *pll;
-	bool bret;
-
-	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_HDMI)) {
-		bret = cnl_ddi_hdmi_pll_dividers(crtc_state);
-		if (!bret) {
-			drm_dbg_kms(&i915->drm,
-				    "Could not get HDMI pll dividers.\n");
-			return false;
-		}
-	} else if (intel_crtc_has_dp_encoder(crtc_state)) {
-		bret = cnl_ddi_dp_set_dpll_hw_state(crtc_state);
-		if (!bret) {
-			drm_dbg_kms(&i915->drm,
-				    "Could not set DP dpll HW state.\n");
-			return false;
-		}
-	} else {
-		drm_dbg_kms(&i915->drm,
-			    "Skip DPLL setup for output_types 0x%x\n",
-			    crtc_state->output_types);
-		return false;
-	}
-
-	pll = intel_find_shared_dpll(state, crtc,
-				     &crtc_state->dpll_hw_state,
-				     BIT(DPLL_ID_SKL_DPLL2) |
-				     BIT(DPLL_ID_SKL_DPLL1) |
-				     BIT(DPLL_ID_SKL_DPLL0));
-	if (!pll) {
-		drm_dbg_kms(&i915->drm, "No PLL selected\n");
-		return false;
-	}
-
-	intel_reference_shared_dpll(state, crtc,
-				    pll, &crtc_state->dpll_hw_state);
-
-	crtc_state->shared_dpll = pll;
-
-	return true;
-}
-
-static int cnl_ddi_pll_get_freq(struct drm_i915_private *i915,
-				const struct intel_shared_dpll *pll,
-				const struct intel_dpll_hw_state *pll_state)
-{
-	if (pll_state->cfgcr0 & DPLL_CFGCR0_HDMI_MODE)
-		return cnl_ddi_wrpll_get_freq(i915, pll, pll_state);
-	else
-		return cnl_ddi_lcpll_get_freq(i915, pll, pll_state);
-}
-
-static void cnl_update_dpll_ref_clks(struct drm_i915_private *i915)
-{
-	/* No SSC reference */
-	i915->dpll.ref_clks.nssc = i915->cdclk.hw.ref;
-}
-
-static void cnl_dump_hw_state(struct drm_i915_private *dev_priv,
-			      const struct intel_dpll_hw_state *hw_state)
-{
-	drm_dbg_kms(&dev_priv->drm, "dpll_hw_state: "
-		    "cfgcr0: 0x%x, cfgcr1: 0x%x\n",
-		    hw_state->cfgcr0,
-		    hw_state->cfgcr1);
-}
-
-static const struct intel_shared_dpll_funcs cnl_ddi_pll_funcs = {
-	.enable = cnl_ddi_pll_enable,
-	.disable = cnl_ddi_pll_disable,
-	.get_hw_state = cnl_ddi_pll_get_hw_state,
-	.get_freq = cnl_ddi_pll_get_freq,
-};
-
-static const struct dpll_info cnl_plls[] = {
-	{ "DPLL 0", &cnl_ddi_pll_funcs, DPLL_ID_SKL_DPLL0, 0 },
-	{ "DPLL 1", &cnl_ddi_pll_funcs, DPLL_ID_SKL_DPLL1, 0 },
-	{ "DPLL 2", &cnl_ddi_pll_funcs, DPLL_ID_SKL_DPLL2, 0 },
-	{ },
-};
-
-static const struct intel_dpll_mgr cnl_pll_mgr = {
-	.dpll_info = cnl_plls,
-	.get_dplls = cnl_get_dpll,
-	.put_dplls = intel_put_dpll,
-	.update_ref_clks = cnl_update_dpll_ref_clks,
-	.dump_hw_state = cnl_dump_hw_state,
-};
 
 struct icl_combo_pll_params {
 	int clock;
@@ -2988,12 +2577,12 @@ static const struct skl_wrpll_params tgl_tbt_pll_24MHz_values = {
 	/* the following params are unused */
 };
 
-static bool icl_calc_dp_combo_pll(struct intel_crtc_state *crtc_state,
-				  struct skl_wrpll_params *pll_params)
+static int icl_calc_dp_combo_pll(struct intel_crtc_state *crtc_state,
+				 struct skl_wrpll_params *pll_params)
 {
-	struct drm_i915_private *dev_priv = to_i915(crtc_state->uapi.crtc->dev);
+	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
 	const struct icl_combo_pll_params *params =
-		dev_priv->dpll.ref_clks.nssc == 24000 ?
+		i915->display.dpll.ref_clks.nssc == 24000 ?
 		icl_dp_combo_pll_24MHz_values :
 		icl_dp_combo_pll_19_2MHz_values;
 	int clock = crtc_state->port_clock;
@@ -3002,23 +2591,23 @@ static bool icl_calc_dp_combo_pll(struct intel_crtc_state *crtc_state,
 	for (i = 0; i < ARRAY_SIZE(icl_dp_combo_pll_24MHz_values); i++) {
 		if (clock == params[i].clock) {
 			*pll_params = params[i].wrpll;
-			return true;
+			return 0;
 		}
 	}
 
 	MISSING_CASE(clock);
-	return false;
+	return -EINVAL;
 }
 
-static bool icl_calc_tbt_pll(struct intel_crtc_state *crtc_state,
-			     struct skl_wrpll_params *pll_params)
+static int icl_calc_tbt_pll(struct intel_crtc_state *crtc_state,
+			    struct skl_wrpll_params *pll_params)
 {
-	struct drm_i915_private *dev_priv = to_i915(crtc_state->uapi.crtc->dev);
+	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
 
-	if (INTEL_GEN(dev_priv) >= 12) {
-		switch (dev_priv->dpll.ref_clks.nssc) {
+	if (DISPLAY_VER(i915) >= 12) {
+		switch (i915->display.dpll.ref_clks.nssc) {
 		default:
-			MISSING_CASE(dev_priv->dpll.ref_clks.nssc);
+			MISSING_CASE(i915->display.dpll.ref_clks.nssc);
 			fallthrough;
 		case 19200:
 		case 38400:
@@ -3029,9 +2618,9 @@ static bool icl_calc_tbt_pll(struct intel_crtc_state *crtc_state,
 			break;
 		}
 	} else {
-		switch (dev_priv->dpll.ref_clks.nssc) {
+		switch (i915->display.dpll.ref_clks.nssc) {
 		default:
-			MISSING_CASE(dev_priv->dpll.ref_clks.nssc);
+			MISSING_CASE(i915->display.dpll.ref_clks.nssc);
 			fallthrough;
 		case 19200:
 		case 38400:
@@ -3043,7 +2632,7 @@ static bool icl_calc_tbt_pll(struct intel_crtc_state *crtc_state,
 		}
 	}
 
-	return true;
+	return 0;
 }
 
 static int icl_ddi_tbt_pll_get_freq(struct drm_i915_private *i915,
@@ -3061,7 +2650,7 @@ static int icl_ddi_tbt_pll_get_freq(struct drm_i915_private *i915,
 
 static int icl_wrpll_ref_clock(struct drm_i915_private *i915)
 {
-	int ref_clock = i915->dpll.ref_clks.nssc;
+	int ref_clock = i915->display.dpll.ref_clks.nssc;
 
 	/*
 	 * For ICL+, the spec states: if reference frequency is 38.4,
@@ -3073,22 +2662,109 @@ static int icl_wrpll_ref_clock(struct drm_i915_private *i915)
 	return ref_clock;
 }
 
-static bool
+static int
 icl_calc_wrpll(struct intel_crtc_state *crtc_state,
 	       struct skl_wrpll_params *wrpll_params)
 {
 	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
+	int ref_clock = icl_wrpll_ref_clock(i915);
+	u32 afe_clock = crtc_state->port_clock * 5;
+	u32 dco_min = 7998000;
+	u32 dco_max = 10000000;
+	u32 dco_mid = (dco_min + dco_max) / 2;
+	static const int dividers[] = {  2,  4,  6,  8, 10, 12,  14,  16,
+					 18, 20, 24, 28, 30, 32,  36,  40,
+					 42, 44, 48, 50, 52, 54,  56,  60,
+					 64, 66, 68, 70, 72, 76,  78,  80,
+					 84, 88, 90, 92, 96, 98, 100, 102,
+					  3,  5,  7,  9, 15, 21 };
+	u32 dco, best_dco = 0, dco_centrality = 0;
+	u32 best_dco_centrality = U32_MAX; /* Spec meaning of 999999 MHz */
+	int d, best_div = 0, pdiv = 0, qdiv = 0, kdiv = 0;
 
-	return __cnl_ddi_calculate_wrpll(crtc_state, wrpll_params,
-					 icl_wrpll_ref_clock(i915));
+	for (d = 0; d < ARRAY_SIZE(dividers); d++) {
+		dco = afe_clock * dividers[d];
+
+		if (dco <= dco_max && dco >= dco_min) {
+			dco_centrality = abs(dco - dco_mid);
+
+			if (dco_centrality < best_dco_centrality) {
+				best_dco_centrality = dco_centrality;
+				best_div = dividers[d];
+				best_dco = dco;
+			}
+		}
+	}
+
+	if (best_div == 0)
+		return -EINVAL;
+
+	icl_wrpll_get_multipliers(best_div, &pdiv, &qdiv, &kdiv);
+	icl_wrpll_params_populate(wrpll_params, best_dco, ref_clock,
+				  pdiv, qdiv, kdiv);
+
+	return 0;
 }
 
 static int icl_ddi_combo_pll_get_freq(struct drm_i915_private *i915,
 				      const struct intel_shared_dpll *pll,
 				      const struct intel_dpll_hw_state *pll_state)
 {
-	return __cnl_ddi_wrpll_get_freq(i915, pll, pll_state,
-					icl_wrpll_ref_clock(i915));
+	int ref_clock = icl_wrpll_ref_clock(i915);
+	u32 dco_fraction;
+	u32 p0, p1, p2, dco_freq;
+
+	p0 = pll_state->cfgcr1 & DPLL_CFGCR1_PDIV_MASK;
+	p2 = pll_state->cfgcr1 & DPLL_CFGCR1_KDIV_MASK;
+
+	if (pll_state->cfgcr1 & DPLL_CFGCR1_QDIV_MODE(1))
+		p1 = (pll_state->cfgcr1 & DPLL_CFGCR1_QDIV_RATIO_MASK) >>
+			DPLL_CFGCR1_QDIV_RATIO_SHIFT;
+	else
+		p1 = 1;
+
+	switch (p0) {
+	case DPLL_CFGCR1_PDIV_2:
+		p0 = 2;
+		break;
+	case DPLL_CFGCR1_PDIV_3:
+		p0 = 3;
+		break;
+	case DPLL_CFGCR1_PDIV_5:
+		p0 = 5;
+		break;
+	case DPLL_CFGCR1_PDIV_7:
+		p0 = 7;
+		break;
+	}
+
+	switch (p2) {
+	case DPLL_CFGCR1_KDIV_1:
+		p2 = 1;
+		break;
+	case DPLL_CFGCR1_KDIV_2:
+		p2 = 2;
+		break;
+	case DPLL_CFGCR1_KDIV_3:
+		p2 = 3;
+		break;
+	}
+
+	dco_freq = (pll_state->cfgcr0 & DPLL_CFGCR0_DCO_INTEGER_MASK) *
+		   ref_clock;
+
+	dco_fraction = (pll_state->cfgcr0 & DPLL_CFGCR0_DCO_FRACTION_MASK) >>
+		       DPLL_CFGCR0_DCO_FRACTION_SHIFT;
+
+	if (ehl_combo_pll_div_frac_wa_needed(i915))
+		dco_fraction *= 2;
+
+	dco_freq += (dco_fraction * ref_clock) / 0x8000;
+
+	if (drm_WARN_ON(&i915->drm, p0 == 0 || p1 == 0 || p2 == 0))
+		return 0;
+
+	return dco_freq / (p0 * p1 * p2 * 5);
 }
 
 static void icl_calc_dpll_state(struct drm_i915_private *i915,
@@ -3096,8 +2772,6 @@ static void icl_calc_dpll_state(struct drm_i915_private *i915,
 				struct intel_dpll_hw_state *pll_state)
 {
 	u32 dco_fraction = pll_params->dco_fraction;
-
-	memset(pll_state, 0, sizeof(*pll_state));
 
 	if (ehl_combo_pll_div_frac_wa_needed(i915))
 		dco_fraction = DIV_ROUND_CLOSEST(dco_fraction, 2);
@@ -3110,29 +2784,22 @@ static void icl_calc_dpll_state(struct drm_i915_private *i915,
 			    DPLL_CFGCR1_KDIV(pll_params->kdiv) |
 			    DPLL_CFGCR1_PDIV(pll_params->pdiv);
 
-	if (INTEL_GEN(i915) >= 12)
+	if (DISPLAY_VER(i915) >= 12)
 		pll_state->cfgcr1 |= TGL_DPLL_CFGCR1_CFSELOVRD_NORMAL_XTAL;
 	else
 		pll_state->cfgcr1 |= DPLL_CFGCR1_CENTRAL_FREQ_8400;
+
+	if (i915->display.vbt.override_afc_startup)
+		pll_state->div0 = TGL_DPLL0_DIV0_AFC_STARTUP(i915->display.vbt.override_afc_startup_val);
 }
 
-static enum tc_port icl_pll_id_to_tc_port(enum intel_dpll_id id)
+static int icl_mg_pll_find_divisors(int clock_khz, bool is_dp, bool use_ssc,
+				    u32 *target_dco_khz,
+				    struct intel_dpll_hw_state *state,
+				    bool is_dkl)
 {
-	return id - DPLL_ID_ICL_MGPLL1;
-}
-
-enum intel_dpll_id icl_tc_port_to_pll_id(enum tc_port tc_port)
-{
-	return tc_port + DPLL_ID_ICL_MGPLL1;
-}
-
-static bool icl_mg_pll_find_divisors(int clock_khz, bool is_dp, bool use_ssc,
-				     u32 *target_dco_khz,
-				     struct intel_dpll_hw_state *state,
-				     bool is_dkl)
-{
+	static const u8 div1_vals[] = { 7, 5, 3, 2 };
 	u32 dco_min_freq, dco_max_freq;
-	int div1_vals[] = {7, 5, 3, 2};
 	unsigned int i;
 	int div2;
 
@@ -3195,22 +2862,22 @@ static bool icl_mg_pll_find_divisors(int clock_khz, bool is_dp, bool use_ssc,
 				hsdiv |
 				MG_CLKTOP2_HSCLKCTL_DSDIV_RATIO(div2);
 
-			return true;
+			return 0;
 		}
 	}
 
-	return false;
+	return -EINVAL;
 }
 
 /*
  * The specification for this function uses real numbers, so the math had to be
  * adapted to integer-only calculation, that's why it looks so different.
  */
-static bool icl_calc_mg_pll_state(struct intel_crtc_state *crtc_state,
-				  struct intel_dpll_hw_state *pll_state)
+static int icl_calc_mg_pll_state(struct intel_crtc_state *crtc_state,
+				 struct intel_dpll_hw_state *pll_state)
 {
-	struct drm_i915_private *dev_priv = to_i915(crtc_state->uapi.crtc->dev);
-	int refclk_khz = dev_priv->dpll.ref_clks.nssc;
+	struct drm_i915_private *i915 = to_i915(crtc_state->uapi.crtc->dev);
+	int refclk_khz = i915->display.dpll.ref_clks.nssc;
 	int clock = crtc_state->port_clock;
 	u32 dco_khz, m1div, m2div_int, m2div_rem, m2div_frac;
 	u32 iref_ndiv, iref_trim, iref_pulse_w;
@@ -3220,16 +2887,13 @@ static bool icl_calc_mg_pll_state(struct intel_crtc_state *crtc_state,
 	u64 tmp;
 	bool use_ssc = false;
 	bool is_dp = !intel_crtc_has_type(crtc_state, INTEL_OUTPUT_HDMI);
-	bool is_dkl = INTEL_GEN(dev_priv) >= 12;
+	bool is_dkl = DISPLAY_VER(i915) >= 12;
+	int ret;
 
-	memset(pll_state, 0, sizeof(*pll_state));
-
-	if (!icl_mg_pll_find_divisors(clock, is_dp, use_ssc, &dco_khz,
-				      pll_state, is_dkl)) {
-		drm_dbg_kms(&dev_priv->drm,
-			    "Failed to find divisors for clock %d\n", clock);
-		return false;
-	}
+	ret = icl_mg_pll_find_divisors(clock, is_dp, use_ssc, &dco_khz,
+				       pll_state, is_dkl);
+	if (ret)
+		return ret;
 
 	m1div = 2;
 	m2div_int = dco_khz / (refclk_khz * m1div);
@@ -3239,12 +2903,8 @@ static bool icl_calc_mg_pll_state(struct intel_crtc_state *crtc_state,
 			m2div_int = dco_khz / (refclk_khz * m1div);
 		}
 
-		if (m2div_int > 255) {
-			drm_dbg_kms(&dev_priv->drm,
-				    "Failed to find mdiv for clock %d\n",
-				    clock);
-			return false;
-		}
+		if (m2div_int > 255)
+			return -EINVAL;
 	}
 	m2div_rem = dco_khz % (refclk_khz * m1div);
 
@@ -3270,7 +2930,7 @@ static bool icl_calc_mg_pll_state(struct intel_crtc_state *crtc_state,
 		break;
 	default:
 		MISSING_CASE(refclk_khz);
-		return false;
+		return -EINVAL;
 	}
 
 	/*
@@ -3325,6 +2985,11 @@ static bool icl_calc_mg_pll_state(struct intel_crtc_state *crtc_state,
 					 DKL_PLL_DIV0_PROP_COEFF(prop_coeff) |
 					 DKL_PLL_DIV0_FBPREDIV(m1div) |
 					 DKL_PLL_DIV0_FBDIV_INT(m2div_int);
+		if (i915->display.vbt.override_afc_startup) {
+			u8 val = i915->display.vbt.override_afc_startup_val;
+
+			pll_state->mg_pll_div0 |= DKL_PLL_DIV0_AFC_STARTUP(val);
+		}
 
 		pll_state->mg_pll_div1 = DKL_PLL_DIV1_IREF_TRIM(iref_trim) |
 					 DKL_PLL_DIV1_TDC_TARGET_CNT(tdc_targetcnt);
@@ -3408,19 +3073,19 @@ static bool icl_calc_mg_pll_state(struct intel_crtc_state *crtc_state,
 		pll_state->mg_pll_bias &= pll_state->mg_pll_bias_mask;
 	}
 
-	return true;
+	return 0;
 }
 
-static int icl_ddi_mg_pll_get_freq(struct drm_i915_private *dev_priv,
+static int icl_ddi_mg_pll_get_freq(struct drm_i915_private *i915,
 				   const struct intel_shared_dpll *pll,
 				   const struct intel_dpll_hw_state *pll_state)
 {
 	u32 m1, m2_int, m2_frac, div1, div2, ref_clock;
 	u64 tmp;
 
-	ref_clock = dev_priv->dpll.ref_clks.nssc;
+	ref_clock = i915->display.dpll.ref_clks.nssc;
 
-	if (INTEL_GEN(dev_priv) >= 12) {
+	if (DISPLAY_VER(i915) >= 12) {
 		m1 = pll_state->mg_pll_div0 & DKL_PLL_DIV0_FBPREDIV_MASK;
 		m1 = m1 >> DKL_PLL_DIV0_FBPREDIV_SHIFT;
 		m2_int = pll_state->mg_pll_div0 & DKL_PLL_DIV0_FBDIV_INT_MASK;
@@ -3515,33 +3180,22 @@ static void icl_update_active_dpll(struct intel_atomic_state *state,
 		enc_to_dig_port(encoder);
 
 	if (primary_port &&
-	    (primary_port->tc_mode == TC_PORT_DP_ALT ||
-	     primary_port->tc_mode == TC_PORT_LEGACY))
+	    (intel_tc_port_in_dp_alt_mode(primary_port) ||
+	     intel_tc_port_in_legacy_mode(primary_port)))
 		port_dpll_id = ICL_PORT_DPLL_MG_PHY;
 
 	icl_set_active_port_dpll(crtc_state, port_dpll_id);
 }
 
-static u32 intel_get_hti_plls(struct drm_i915_private *i915)
+static int icl_compute_combo_phy_dpll(struct intel_atomic_state *state,
+				      struct intel_crtc *crtc)
 {
-	if (!(i915->hti_state & HDPORT_ENABLED))
-		return 0;
-
-	return REG_FIELD_GET(HDPORT_DPLL_USED_MASK, i915->hti_state);
-}
-
-static bool icl_get_combo_phy_dpll(struct intel_atomic_state *state,
-				   struct intel_crtc *crtc,
-				   struct intel_encoder *encoder)
-{
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
 	struct intel_crtc_state *crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
-	struct skl_wrpll_params pll_params = { };
 	struct icl_port_dpll *port_dpll =
 		&crtc_state->icl_port_dplls[ICL_PORT_DPLL_DEFAULT];
-	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
-	enum port port = encoder->port;
-	unsigned long dpll_mask;
+	struct skl_wrpll_params pll_params = {};
 	int ret;
 
 	if (intel_crtc_has_type(crtc_state, INTEL_OUTPUT_HDMI) ||
@@ -3550,16 +3204,39 @@ static bool icl_get_combo_phy_dpll(struct intel_atomic_state *state,
 	else
 		ret = icl_calc_dp_combo_pll(crtc_state, &pll_params);
 
-	if (!ret) {
-		drm_dbg_kms(&dev_priv->drm,
-			    "Could not calculate combo PHY PLL state.\n");
+	if (ret)
+		return ret;
 
-		return false;
-	}
+	icl_calc_dpll_state(i915, &pll_params, &port_dpll->hw_state);
 
-	icl_calc_dpll_state(dev_priv, &pll_params, &port_dpll->hw_state);
+	/* this is mainly for the fastset check */
+	icl_set_active_port_dpll(crtc_state, ICL_PORT_DPLL_DEFAULT);
 
-	if (IS_DG1(dev_priv)) {
+	crtc_state->port_clock = icl_ddi_combo_pll_get_freq(i915, NULL,
+							    &port_dpll->hw_state);
+
+	return 0;
+}
+
+static int icl_get_combo_phy_dpll(struct intel_atomic_state *state,
+				  struct intel_crtc *crtc,
+				  struct intel_encoder *encoder)
+{
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
+	struct intel_crtc_state *crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+	struct icl_port_dpll *port_dpll =
+		&crtc_state->icl_port_dplls[ICL_PORT_DPLL_DEFAULT];
+	enum port port = encoder->port;
+	unsigned long dpll_mask;
+
+	if (IS_ALDERLAKE_S(i915)) {
+		dpll_mask =
+			BIT(DPLL_ID_DG1_DPLL3) |
+			BIT(DPLL_ID_DG1_DPLL2) |
+			BIT(DPLL_ID_ICL_DPLL1) |
+			BIT(DPLL_ID_ICL_DPLL0);
+	} else if (IS_DG1(i915)) {
 		if (port == PORT_D || port == PORT_E) {
 			dpll_mask =
 				BIT(DPLL_ID_DG1_DPLL2) |
@@ -3569,12 +3246,13 @@ static bool icl_get_combo_phy_dpll(struct intel_atomic_state *state,
 				BIT(DPLL_ID_DG1_DPLL0) |
 				BIT(DPLL_ID_DG1_DPLL1);
 		}
-	} else if (IS_ROCKETLAKE(dev_priv)) {
+	} else if (IS_ROCKETLAKE(i915)) {
 		dpll_mask =
 			BIT(DPLL_ID_EHL_DPLL4) |
 			BIT(DPLL_ID_ICL_DPLL1) |
 			BIT(DPLL_ID_ICL_DPLL0);
-	} else if (IS_JSL_EHL(dev_priv) && port != PORT_A) {
+	} else if ((IS_JASPERLAKE(i915) || IS_ELKHARTLAKE(i915)) &&
+		   port != PORT_A) {
 		dpll_mask =
 			BIT(DPLL_ID_EHL_DPLL4) |
 			BIT(DPLL_ID_ICL_DPLL1) |
@@ -3584,71 +3262,84 @@ static bool icl_get_combo_phy_dpll(struct intel_atomic_state *state,
 	}
 
 	/* Eliminate DPLLs from consideration if reserved by HTI */
-	dpll_mask &= ~intel_get_hti_plls(dev_priv);
+	dpll_mask &= ~intel_hti_dpll_mask(i915);
 
 	port_dpll->pll = intel_find_shared_dpll(state, crtc,
 						&port_dpll->hw_state,
 						dpll_mask);
-	if (!port_dpll->pll) {
-		drm_dbg_kms(&dev_priv->drm,
-			    "No combo PHY PLL found for [ENCODER:%d:%s]\n",
-			    encoder->base.base.id, encoder->base.name);
-		return false;
-	}
+	if (!port_dpll->pll)
+		return -EINVAL;
 
 	intel_reference_shared_dpll(state, crtc,
 				    port_dpll->pll, &port_dpll->hw_state);
 
 	icl_update_active_dpll(state, crtc, encoder);
 
-	return true;
+	return 0;
 }
 
-static bool icl_get_tc_phy_dplls(struct intel_atomic_state *state,
-				 struct intel_crtc *crtc,
-				 struct intel_encoder *encoder)
+static int icl_compute_tc_phy_dplls(struct intel_atomic_state *state,
+				    struct intel_crtc *crtc)
 {
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
 	struct intel_crtc_state *crtc_state =
 		intel_atomic_get_new_crtc_state(state, crtc);
-	struct skl_wrpll_params pll_params = { };
-	struct icl_port_dpll *port_dpll;
-	enum intel_dpll_id dpll_id;
+	struct icl_port_dpll *port_dpll =
+		&crtc_state->icl_port_dplls[ICL_PORT_DPLL_DEFAULT];
+	struct skl_wrpll_params pll_params = {};
+	int ret;
 
 	port_dpll = &crtc_state->icl_port_dplls[ICL_PORT_DPLL_DEFAULT];
-	if (!icl_calc_tbt_pll(crtc_state, &pll_params)) {
-		drm_dbg_kms(&dev_priv->drm,
-			    "Could not calculate TBT PLL state.\n");
-		return false;
-	}
+	ret = icl_calc_tbt_pll(crtc_state, &pll_params);
+	if (ret)
+		return ret;
 
-	icl_calc_dpll_state(dev_priv, &pll_params, &port_dpll->hw_state);
+	icl_calc_dpll_state(i915, &pll_params, &port_dpll->hw_state);
 
+	port_dpll = &crtc_state->icl_port_dplls[ICL_PORT_DPLL_MG_PHY];
+	ret = icl_calc_mg_pll_state(crtc_state, &port_dpll->hw_state);
+	if (ret)
+		return ret;
+
+	/* this is mainly for the fastset check */
+	icl_set_active_port_dpll(crtc_state, ICL_PORT_DPLL_MG_PHY);
+
+	crtc_state->port_clock = icl_ddi_mg_pll_get_freq(i915, NULL,
+							 &port_dpll->hw_state);
+
+	return 0;
+}
+
+static int icl_get_tc_phy_dplls(struct intel_atomic_state *state,
+				struct intel_crtc *crtc,
+				struct intel_encoder *encoder)
+{
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	struct intel_crtc_state *crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+	struct icl_port_dpll *port_dpll =
+		&crtc_state->icl_port_dplls[ICL_PORT_DPLL_DEFAULT];
+	enum intel_dpll_id dpll_id;
+	int ret;
+
+	port_dpll = &crtc_state->icl_port_dplls[ICL_PORT_DPLL_DEFAULT];
 	port_dpll->pll = intel_find_shared_dpll(state, crtc,
 						&port_dpll->hw_state,
 						BIT(DPLL_ID_ICL_TBTPLL));
-	if (!port_dpll->pll) {
-		drm_dbg_kms(&dev_priv->drm, "No TBT-ALT PLL found\n");
-		return false;
-	}
+	if (!port_dpll->pll)
+		return -EINVAL;
 	intel_reference_shared_dpll(state, crtc,
 				    port_dpll->pll, &port_dpll->hw_state);
 
 
 	port_dpll = &crtc_state->icl_port_dplls[ICL_PORT_DPLL_MG_PHY];
-	if (!icl_calc_mg_pll_state(crtc_state, &port_dpll->hw_state)) {
-		drm_dbg_kms(&dev_priv->drm,
-			    "Could not calculate MG PHY PLL state.\n");
-		goto err_unreference_tbt_pll;
-	}
-
-	dpll_id = icl_tc_port_to_pll_id(intel_port_to_tc(dev_priv,
+	dpll_id = icl_tc_port_to_pll_id(intel_port_to_tc(i915,
 							 encoder->port));
 	port_dpll->pll = intel_find_shared_dpll(state, crtc,
 						&port_dpll->hw_state,
 						BIT(dpll_id));
 	if (!port_dpll->pll) {
-		drm_dbg_kms(&dev_priv->drm, "No MG PHY PLL found\n");
+		ret = -EINVAL;
 		goto err_unreference_tbt_pll;
 	}
 	intel_reference_shared_dpll(state, crtc,
@@ -3656,30 +3347,47 @@ static bool icl_get_tc_phy_dplls(struct intel_atomic_state *state,
 
 	icl_update_active_dpll(state, crtc, encoder);
 
-	return true;
+	return 0;
 
 err_unreference_tbt_pll:
 	port_dpll = &crtc_state->icl_port_dplls[ICL_PORT_DPLL_DEFAULT];
 	intel_unreference_shared_dpll(state, crtc, port_dpll->pll);
 
-	return false;
+	return ret;
 }
 
-static bool icl_get_dplls(struct intel_atomic_state *state,
-			  struct intel_crtc *crtc,
-			  struct intel_encoder *encoder)
+static int icl_compute_dplls(struct intel_atomic_state *state,
+			     struct intel_crtc *crtc,
+			     struct intel_encoder *encoder)
 {
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
-	enum phy phy = intel_port_to_phy(dev_priv, encoder->port);
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	enum phy phy = intel_port_to_phy(i915, encoder->port);
 
-	if (intel_phy_is_combo(dev_priv, phy))
+	if (intel_phy_is_combo(i915, phy))
+		return icl_compute_combo_phy_dpll(state, crtc);
+	else if (intel_phy_is_tc(i915, phy))
+		return icl_compute_tc_phy_dplls(state, crtc);
+
+	MISSING_CASE(phy);
+
+	return 0;
+}
+
+static int icl_get_dplls(struct intel_atomic_state *state,
+			 struct intel_crtc *crtc,
+			 struct intel_encoder *encoder)
+{
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	enum phy phy = intel_port_to_phy(i915, encoder->port);
+
+	if (intel_phy_is_combo(i915, phy))
 		return icl_get_combo_phy_dpll(state, crtc, encoder);
-	else if (intel_phy_is_tc(dev_priv, phy))
+	else if (intel_phy_is_tc(i915, phy))
 		return icl_get_tc_phy_dplls(state, crtc, encoder);
 
 	MISSING_CASE(phy);
 
-	return false;
+	return -EINVAL;
 }
 
 static void icl_put_dplls(struct intel_atomic_state *state,
@@ -3708,7 +3416,7 @@ static void icl_put_dplls(struct intel_atomic_state *state,
 	}
 }
 
-static bool mg_pll_get_hw_state(struct drm_i915_private *dev_priv,
+static bool mg_pll_get_hw_state(struct drm_i915_private *i915,
 				struct intel_shared_dpll *pll,
 				struct intel_dpll_hw_state *hw_state)
 {
@@ -3718,44 +3426,46 @@ static bool mg_pll_get_hw_state(struct drm_i915_private *dev_priv,
 	bool ret = false;
 	u32 val;
 
-	wakeref = intel_display_power_get_if_enabled(dev_priv,
+	i915_reg_t enable_reg = intel_tc_pll_enable_reg(i915, pll);
+
+	wakeref = intel_display_power_get_if_enabled(i915,
 						     POWER_DOMAIN_DISPLAY_CORE);
 	if (!wakeref)
 		return false;
 
-	val = intel_de_read(dev_priv, MG_PLL_ENABLE(tc_port));
+	val = intel_de_read(i915, enable_reg);
 	if (!(val & PLL_ENABLE))
 		goto out;
 
-	hw_state->mg_refclkin_ctl = intel_de_read(dev_priv,
+	hw_state->mg_refclkin_ctl = intel_de_read(i915,
 						  MG_REFCLKIN_CTL(tc_port));
 	hw_state->mg_refclkin_ctl &= MG_REFCLKIN_CTL_OD_2_MUX_MASK;
 
 	hw_state->mg_clktop2_coreclkctl1 =
-		intel_de_read(dev_priv, MG_CLKTOP2_CORECLKCTL1(tc_port));
+		intel_de_read(i915, MG_CLKTOP2_CORECLKCTL1(tc_port));
 	hw_state->mg_clktop2_coreclkctl1 &=
 		MG_CLKTOP2_CORECLKCTL1_A_DIVRATIO_MASK;
 
 	hw_state->mg_clktop2_hsclkctl =
-		intel_de_read(dev_priv, MG_CLKTOP2_HSCLKCTL(tc_port));
+		intel_de_read(i915, MG_CLKTOP2_HSCLKCTL(tc_port));
 	hw_state->mg_clktop2_hsclkctl &=
 		MG_CLKTOP2_HSCLKCTL_TLINEDRV_CLKSEL_MASK |
 		MG_CLKTOP2_HSCLKCTL_CORE_INPUTSEL_MASK |
 		MG_CLKTOP2_HSCLKCTL_HSDIV_RATIO_MASK |
 		MG_CLKTOP2_HSCLKCTL_DSDIV_RATIO_MASK;
 
-	hw_state->mg_pll_div0 = intel_de_read(dev_priv, MG_PLL_DIV0(tc_port));
-	hw_state->mg_pll_div1 = intel_de_read(dev_priv, MG_PLL_DIV1(tc_port));
-	hw_state->mg_pll_lf = intel_de_read(dev_priv, MG_PLL_LF(tc_port));
-	hw_state->mg_pll_frac_lock = intel_de_read(dev_priv,
+	hw_state->mg_pll_div0 = intel_de_read(i915, MG_PLL_DIV0(tc_port));
+	hw_state->mg_pll_div1 = intel_de_read(i915, MG_PLL_DIV1(tc_port));
+	hw_state->mg_pll_lf = intel_de_read(i915, MG_PLL_LF(tc_port));
+	hw_state->mg_pll_frac_lock = intel_de_read(i915,
 						   MG_PLL_FRAC_LOCK(tc_port));
-	hw_state->mg_pll_ssc = intel_de_read(dev_priv, MG_PLL_SSC(tc_port));
+	hw_state->mg_pll_ssc = intel_de_read(i915, MG_PLL_SSC(tc_port));
 
-	hw_state->mg_pll_bias = intel_de_read(dev_priv, MG_PLL_BIAS(tc_port));
+	hw_state->mg_pll_bias = intel_de_read(i915, MG_PLL_BIAS(tc_port));
 	hw_state->mg_pll_tdc_coldst_bias =
-		intel_de_read(dev_priv, MG_PLL_TDC_COLDST_BIAS(tc_port));
+		intel_de_read(i915, MG_PLL_TDC_COLDST_BIAS(tc_port));
 
-	if (dev_priv->dpll.ref_clks.nssc == 38400) {
+	if (i915->display.dpll.ref_clks.nssc == 38400) {
 		hw_state->mg_pll_tdc_coldst_bias_mask = MG_PLL_TDC_COLDST_COLDSTART;
 		hw_state->mg_pll_bias_mask = 0;
 	} else {
@@ -3768,11 +3478,11 @@ static bool mg_pll_get_hw_state(struct drm_i915_private *dev_priv,
 
 	ret = true;
 out:
-	intel_display_power_put(dev_priv, POWER_DOMAIN_DISPLAY_CORE, wakeref);
+	intel_display_power_put(i915, POWER_DOMAIN_DISPLAY_CORE, wakeref);
 	return ret;
 }
 
-static bool dkl_pll_get_hw_state(struct drm_i915_private *dev_priv,
+static bool dkl_pll_get_hw_state(struct drm_i915_private *i915,
 				 struct intel_shared_dpll *pll,
 				 struct intel_dpll_hw_state *hw_state)
 {
@@ -3782,12 +3492,12 @@ static bool dkl_pll_get_hw_state(struct drm_i915_private *dev_priv,
 	bool ret = false;
 	u32 val;
 
-	wakeref = intel_display_power_get_if_enabled(dev_priv,
+	wakeref = intel_display_power_get_if_enabled(i915,
 						     POWER_DOMAIN_DISPLAY_CORE);
 	if (!wakeref)
 		return false;
 
-	val = intel_de_read(dev_priv, MG_PLL_ENABLE(tc_port));
+	val = intel_de_read(i915, intel_tc_pll_enable_reg(i915, pll));
 	if (!(val & PLL_ENABLE))
 		goto out;
 
@@ -3795,15 +3505,12 @@ static bool dkl_pll_get_hw_state(struct drm_i915_private *dev_priv,
 	 * All registers read here have the same HIP_INDEX_REG even though
 	 * they are on different building blocks
 	 */
-	intel_de_write(dev_priv, HIP_INDEX_REG(tc_port),
-		       HIP_INDEX_VAL(tc_port, 0x2));
-
-	hw_state->mg_refclkin_ctl = intel_de_read(dev_priv,
-						  DKL_REFCLKIN_CTL(tc_port));
+	hw_state->mg_refclkin_ctl = intel_dkl_phy_read(i915,
+						       DKL_REFCLKIN_CTL(tc_port));
 	hw_state->mg_refclkin_ctl &= MG_REFCLKIN_CTL_OD_2_MUX_MASK;
 
 	hw_state->mg_clktop2_hsclkctl =
-		intel_de_read(dev_priv, DKL_CLKTOP2_HSCLKCTL(tc_port));
+		intel_dkl_phy_read(i915, DKL_CLKTOP2_HSCLKCTL(tc_port));
 	hw_state->mg_clktop2_hsclkctl &=
 		MG_CLKTOP2_HSCLKCTL_TLINEDRV_CLKSEL_MASK |
 		MG_CLKTOP2_HSCLKCTL_CORE_INPUTSEL_MASK |
@@ -3811,42 +3518,42 @@ static bool dkl_pll_get_hw_state(struct drm_i915_private *dev_priv,
 		MG_CLKTOP2_HSCLKCTL_DSDIV_RATIO_MASK;
 
 	hw_state->mg_clktop2_coreclkctl1 =
-		intel_de_read(dev_priv, DKL_CLKTOP2_CORECLKCTL1(tc_port));
+		intel_dkl_phy_read(i915, DKL_CLKTOP2_CORECLKCTL1(tc_port));
 	hw_state->mg_clktop2_coreclkctl1 &=
 		MG_CLKTOP2_CORECLKCTL1_A_DIVRATIO_MASK;
 
-	hw_state->mg_pll_div0 = intel_de_read(dev_priv, DKL_PLL_DIV0(tc_port));
-	hw_state->mg_pll_div0 &= (DKL_PLL_DIV0_INTEG_COEFF_MASK |
-				  DKL_PLL_DIV0_PROP_COEFF_MASK |
-				  DKL_PLL_DIV0_FBPREDIV_MASK |
-				  DKL_PLL_DIV0_FBDIV_INT_MASK);
+	hw_state->mg_pll_div0 = intel_dkl_phy_read(i915, DKL_PLL_DIV0(tc_port));
+	val = DKL_PLL_DIV0_MASK;
+	if (i915->display.vbt.override_afc_startup)
+		val |= DKL_PLL_DIV0_AFC_STARTUP_MASK;
+	hw_state->mg_pll_div0 &= val;
 
-	hw_state->mg_pll_div1 = intel_de_read(dev_priv, DKL_PLL_DIV1(tc_port));
+	hw_state->mg_pll_div1 = intel_dkl_phy_read(i915, DKL_PLL_DIV1(tc_port));
 	hw_state->mg_pll_div1 &= (DKL_PLL_DIV1_IREF_TRIM_MASK |
 				  DKL_PLL_DIV1_TDC_TARGET_CNT_MASK);
 
-	hw_state->mg_pll_ssc = intel_de_read(dev_priv, DKL_PLL_SSC(tc_port));
+	hw_state->mg_pll_ssc = intel_dkl_phy_read(i915, DKL_PLL_SSC(tc_port));
 	hw_state->mg_pll_ssc &= (DKL_PLL_SSC_IREF_NDIV_RATIO_MASK |
 				 DKL_PLL_SSC_STEP_LEN_MASK |
 				 DKL_PLL_SSC_STEP_NUM_MASK |
 				 DKL_PLL_SSC_EN);
 
-	hw_state->mg_pll_bias = intel_de_read(dev_priv, DKL_PLL_BIAS(tc_port));
+	hw_state->mg_pll_bias = intel_dkl_phy_read(i915, DKL_PLL_BIAS(tc_port));
 	hw_state->mg_pll_bias &= (DKL_PLL_BIAS_FRAC_EN_H |
 				  DKL_PLL_BIAS_FBDIV_FRAC_MASK);
 
 	hw_state->mg_pll_tdc_coldst_bias =
-		intel_de_read(dev_priv, DKL_PLL_TDC_COLDST_BIAS(tc_port));
+		intel_dkl_phy_read(i915, DKL_PLL_TDC_COLDST_BIAS(tc_port));
 	hw_state->mg_pll_tdc_coldst_bias &= (DKL_PLL_TDC_SSC_STEP_SIZE_MASK |
 					     DKL_PLL_TDC_FEED_FWD_GAIN_MASK);
 
 	ret = true;
 out:
-	intel_display_power_put(dev_priv, POWER_DOMAIN_DISPLAY_CORE, wakeref);
+	intel_display_power_put(i915, POWER_DOMAIN_DISPLAY_CORE, wakeref);
 	return ret;
 }
 
-static bool icl_pll_get_hw_state(struct drm_i915_private *dev_priv,
+static bool icl_pll_get_hw_state(struct drm_i915_private *i915,
 				 struct intel_shared_dpll *pll,
 				 struct intel_dpll_hw_state *hw_state,
 				 i915_reg_t enable_reg)
@@ -3856,82 +3563,95 @@ static bool icl_pll_get_hw_state(struct drm_i915_private *dev_priv,
 	bool ret = false;
 	u32 val;
 
-	wakeref = intel_display_power_get_if_enabled(dev_priv,
+	wakeref = intel_display_power_get_if_enabled(i915,
 						     POWER_DOMAIN_DISPLAY_CORE);
 	if (!wakeref)
 		return false;
 
-	val = intel_de_read(dev_priv, enable_reg);
+	val = intel_de_read(i915, enable_reg);
 	if (!(val & PLL_ENABLE))
 		goto out;
 
-	if (IS_DG1(dev_priv)) {
-		hw_state->cfgcr0 = intel_de_read(dev_priv, DG1_DPLL_CFGCR0(id));
-		hw_state->cfgcr1 = intel_de_read(dev_priv, DG1_DPLL_CFGCR1(id));
-	} else if (IS_ROCKETLAKE(dev_priv)) {
-		hw_state->cfgcr0 = intel_de_read(dev_priv,
+	if (IS_ALDERLAKE_S(i915)) {
+		hw_state->cfgcr0 = intel_de_read(i915, ADLS_DPLL_CFGCR0(id));
+		hw_state->cfgcr1 = intel_de_read(i915, ADLS_DPLL_CFGCR1(id));
+	} else if (IS_DG1(i915)) {
+		hw_state->cfgcr0 = intel_de_read(i915, DG1_DPLL_CFGCR0(id));
+		hw_state->cfgcr1 = intel_de_read(i915, DG1_DPLL_CFGCR1(id));
+	} else if (IS_ROCKETLAKE(i915)) {
+		hw_state->cfgcr0 = intel_de_read(i915,
 						 RKL_DPLL_CFGCR0(id));
-		hw_state->cfgcr1 = intel_de_read(dev_priv,
+		hw_state->cfgcr1 = intel_de_read(i915,
 						 RKL_DPLL_CFGCR1(id));
-	} else if (INTEL_GEN(dev_priv) >= 12) {
-		hw_state->cfgcr0 = intel_de_read(dev_priv,
+	} else if (DISPLAY_VER(i915) >= 12) {
+		hw_state->cfgcr0 = intel_de_read(i915,
 						 TGL_DPLL_CFGCR0(id));
-		hw_state->cfgcr1 = intel_de_read(dev_priv,
+		hw_state->cfgcr1 = intel_de_read(i915,
 						 TGL_DPLL_CFGCR1(id));
+		if (i915->display.vbt.override_afc_startup) {
+			hw_state->div0 = intel_de_read(i915, TGL_DPLL0_DIV0(id));
+			hw_state->div0 &= TGL_DPLL0_DIV0_AFC_STARTUP_MASK;
+		}
 	} else {
-		if (IS_JSL_EHL(dev_priv) && id == DPLL_ID_EHL_DPLL4) {
-			hw_state->cfgcr0 = intel_de_read(dev_priv,
+		if ((IS_JASPERLAKE(i915) || IS_ELKHARTLAKE(i915)) &&
+		    id == DPLL_ID_EHL_DPLL4) {
+			hw_state->cfgcr0 = intel_de_read(i915,
 							 ICL_DPLL_CFGCR0(4));
-			hw_state->cfgcr1 = intel_de_read(dev_priv,
+			hw_state->cfgcr1 = intel_de_read(i915,
 							 ICL_DPLL_CFGCR1(4));
 		} else {
-			hw_state->cfgcr0 = intel_de_read(dev_priv,
+			hw_state->cfgcr0 = intel_de_read(i915,
 							 ICL_DPLL_CFGCR0(id));
-			hw_state->cfgcr1 = intel_de_read(dev_priv,
+			hw_state->cfgcr1 = intel_de_read(i915,
 							 ICL_DPLL_CFGCR1(id));
 		}
 	}
 
 	ret = true;
 out:
-	intel_display_power_put(dev_priv, POWER_DOMAIN_DISPLAY_CORE, wakeref);
+	intel_display_power_put(i915, POWER_DOMAIN_DISPLAY_CORE, wakeref);
 	return ret;
 }
 
-static bool combo_pll_get_hw_state(struct drm_i915_private *dev_priv,
+static bool combo_pll_get_hw_state(struct drm_i915_private *i915,
 				   struct intel_shared_dpll *pll,
 				   struct intel_dpll_hw_state *hw_state)
 {
-	i915_reg_t enable_reg = intel_combo_pll_enable_reg(dev_priv, pll);
+	i915_reg_t enable_reg = intel_combo_pll_enable_reg(i915, pll);
 
-	return icl_pll_get_hw_state(dev_priv, pll, hw_state, enable_reg);
+	return icl_pll_get_hw_state(i915, pll, hw_state, enable_reg);
 }
 
-static bool tbt_pll_get_hw_state(struct drm_i915_private *dev_priv,
+static bool tbt_pll_get_hw_state(struct drm_i915_private *i915,
 				 struct intel_shared_dpll *pll,
 				 struct intel_dpll_hw_state *hw_state)
 {
-	return icl_pll_get_hw_state(dev_priv, pll, hw_state, TBT_PLL_ENABLE);
+	return icl_pll_get_hw_state(i915, pll, hw_state, TBT_PLL_ENABLE);
 }
 
-static void icl_dpll_write(struct drm_i915_private *dev_priv,
+static void icl_dpll_write(struct drm_i915_private *i915,
 			   struct intel_shared_dpll *pll)
 {
 	struct intel_dpll_hw_state *hw_state = &pll->state.hw_state;
 	const enum intel_dpll_id id = pll->info->id;
-	i915_reg_t cfgcr0_reg, cfgcr1_reg;
+	i915_reg_t cfgcr0_reg, cfgcr1_reg, div0_reg = INVALID_MMIO_REG;
 
-	if (IS_DG1(dev_priv)) {
+	if (IS_ALDERLAKE_S(i915)) {
+		cfgcr0_reg = ADLS_DPLL_CFGCR0(id);
+		cfgcr1_reg = ADLS_DPLL_CFGCR1(id);
+	} else if (IS_DG1(i915)) {
 		cfgcr0_reg = DG1_DPLL_CFGCR0(id);
 		cfgcr1_reg = DG1_DPLL_CFGCR1(id);
-	} else if (IS_ROCKETLAKE(dev_priv)) {
+	} else if (IS_ROCKETLAKE(i915)) {
 		cfgcr0_reg = RKL_DPLL_CFGCR0(id);
 		cfgcr1_reg = RKL_DPLL_CFGCR1(id);
-	} else if (INTEL_GEN(dev_priv) >= 12) {
+	} else if (DISPLAY_VER(i915) >= 12) {
 		cfgcr0_reg = TGL_DPLL_CFGCR0(id);
 		cfgcr1_reg = TGL_DPLL_CFGCR1(id);
+		div0_reg = TGL_DPLL0_DIV0(id);
 	} else {
-		if (IS_JSL_EHL(dev_priv) && id == DPLL_ID_EHL_DPLL4) {
+		if ((IS_JASPERLAKE(i915) || IS_ELKHARTLAKE(i915)) &&
+		    id == DPLL_ID_EHL_DPLL4) {
 			cfgcr0_reg = ICL_DPLL_CFGCR0(4);
 			cfgcr1_reg = ICL_DPLL_CFGCR1(4);
 		} else {
@@ -3940,17 +3660,22 @@ static void icl_dpll_write(struct drm_i915_private *dev_priv,
 		}
 	}
 
-	intel_de_write(dev_priv, cfgcr0_reg, hw_state->cfgcr0);
-	intel_de_write(dev_priv, cfgcr1_reg, hw_state->cfgcr1);
-	intel_de_posting_read(dev_priv, cfgcr1_reg);
+	intel_de_write(i915, cfgcr0_reg, hw_state->cfgcr0);
+	intel_de_write(i915, cfgcr1_reg, hw_state->cfgcr1);
+	drm_WARN_ON_ONCE(&i915->drm, i915->display.vbt.override_afc_startup &&
+			 !i915_mmio_reg_valid(div0_reg));
+	if (i915->display.vbt.override_afc_startup &&
+	    i915_mmio_reg_valid(div0_reg))
+		intel_de_rmw(i915, div0_reg,
+			     TGL_DPLL0_DIV0_AFC_STARTUP_MASK, hw_state->div0);
+	intel_de_posting_read(i915, cfgcr1_reg);
 }
 
-static void icl_mg_pll_write(struct drm_i915_private *dev_priv,
+static void icl_mg_pll_write(struct drm_i915_private *i915,
 			     struct intel_shared_dpll *pll)
 {
 	struct intel_dpll_hw_state *hw_state = &pll->state.hw_state;
 	enum tc_port tc_port = icl_pll_id_to_tc_port(pll->info->id);
-	u32 val;
 
 	/*
 	 * Some of the following registers have reserved fields, so program
@@ -3958,45 +3683,38 @@ static void icl_mg_pll_write(struct drm_i915_private *dev_priv,
 	 * during the calc/readout phase if the mask depends on some other HW
 	 * state like refclk, see icl_calc_mg_pll_state().
 	 */
-	val = intel_de_read(dev_priv, MG_REFCLKIN_CTL(tc_port));
-	val &= ~MG_REFCLKIN_CTL_OD_2_MUX_MASK;
-	val |= hw_state->mg_refclkin_ctl;
-	intel_de_write(dev_priv, MG_REFCLKIN_CTL(tc_port), val);
+	intel_de_rmw(i915, MG_REFCLKIN_CTL(tc_port),
+		     MG_REFCLKIN_CTL_OD_2_MUX_MASK, hw_state->mg_refclkin_ctl);
 
-	val = intel_de_read(dev_priv, MG_CLKTOP2_CORECLKCTL1(tc_port));
-	val &= ~MG_CLKTOP2_CORECLKCTL1_A_DIVRATIO_MASK;
-	val |= hw_state->mg_clktop2_coreclkctl1;
-	intel_de_write(dev_priv, MG_CLKTOP2_CORECLKCTL1(tc_port), val);
+	intel_de_rmw(i915, MG_CLKTOP2_CORECLKCTL1(tc_port),
+		     MG_CLKTOP2_CORECLKCTL1_A_DIVRATIO_MASK,
+		     hw_state->mg_clktop2_coreclkctl1);
 
-	val = intel_de_read(dev_priv, MG_CLKTOP2_HSCLKCTL(tc_port));
-	val &= ~(MG_CLKTOP2_HSCLKCTL_TLINEDRV_CLKSEL_MASK |
-		 MG_CLKTOP2_HSCLKCTL_CORE_INPUTSEL_MASK |
-		 MG_CLKTOP2_HSCLKCTL_HSDIV_RATIO_MASK |
-		 MG_CLKTOP2_HSCLKCTL_DSDIV_RATIO_MASK);
-	val |= hw_state->mg_clktop2_hsclkctl;
-	intel_de_write(dev_priv, MG_CLKTOP2_HSCLKCTL(tc_port), val);
+	intel_de_rmw(i915, MG_CLKTOP2_HSCLKCTL(tc_port),
+		     MG_CLKTOP2_HSCLKCTL_TLINEDRV_CLKSEL_MASK |
+		     MG_CLKTOP2_HSCLKCTL_CORE_INPUTSEL_MASK |
+		     MG_CLKTOP2_HSCLKCTL_HSDIV_RATIO_MASK |
+		     MG_CLKTOP2_HSCLKCTL_DSDIV_RATIO_MASK,
+		     hw_state->mg_clktop2_hsclkctl);
 
-	intel_de_write(dev_priv, MG_PLL_DIV0(tc_port), hw_state->mg_pll_div0);
-	intel_de_write(dev_priv, MG_PLL_DIV1(tc_port), hw_state->mg_pll_div1);
-	intel_de_write(dev_priv, MG_PLL_LF(tc_port), hw_state->mg_pll_lf);
-	intel_de_write(dev_priv, MG_PLL_FRAC_LOCK(tc_port),
+	intel_de_write(i915, MG_PLL_DIV0(tc_port), hw_state->mg_pll_div0);
+	intel_de_write(i915, MG_PLL_DIV1(tc_port), hw_state->mg_pll_div1);
+	intel_de_write(i915, MG_PLL_LF(tc_port), hw_state->mg_pll_lf);
+	intel_de_write(i915, MG_PLL_FRAC_LOCK(tc_port),
 		       hw_state->mg_pll_frac_lock);
-	intel_de_write(dev_priv, MG_PLL_SSC(tc_port), hw_state->mg_pll_ssc);
+	intel_de_write(i915, MG_PLL_SSC(tc_port), hw_state->mg_pll_ssc);
 
-	val = intel_de_read(dev_priv, MG_PLL_BIAS(tc_port));
-	val &= ~hw_state->mg_pll_bias_mask;
-	val |= hw_state->mg_pll_bias;
-	intel_de_write(dev_priv, MG_PLL_BIAS(tc_port), val);
+	intel_de_rmw(i915, MG_PLL_BIAS(tc_port),
+		     hw_state->mg_pll_bias_mask, hw_state->mg_pll_bias);
 
-	val = intel_de_read(dev_priv, MG_PLL_TDC_COLDST_BIAS(tc_port));
-	val &= ~hw_state->mg_pll_tdc_coldst_bias_mask;
-	val |= hw_state->mg_pll_tdc_coldst_bias;
-	intel_de_write(dev_priv, MG_PLL_TDC_COLDST_BIAS(tc_port), val);
+	intel_de_rmw(i915, MG_PLL_TDC_COLDST_BIAS(tc_port),
+		     hw_state->mg_pll_tdc_coldst_bias_mask,
+		     hw_state->mg_pll_tdc_coldst_bias);
 
-	intel_de_posting_read(dev_priv, MG_PLL_TDC_COLDST_BIAS(tc_port));
+	intel_de_posting_read(i915, MG_PLL_TDC_COLDST_BIAS(tc_port));
 }
 
-static void dkl_pll_write(struct drm_i915_private *dev_priv,
+static void dkl_pll_write(struct drm_i915_private *i915,
 			  struct intel_shared_dpll *pll)
 {
 	struct intel_dpll_hw_state *hw_state = &pll->state.hw_state;
@@ -4007,105 +3725,116 @@ static void dkl_pll_write(struct drm_i915_private *dev_priv,
 	 * All registers programmed here have the same HIP_INDEX_REG even
 	 * though on different building block
 	 */
-	intel_de_write(dev_priv, HIP_INDEX_REG(tc_port),
-		       HIP_INDEX_VAL(tc_port, 0x2));
-
 	/* All the registers are RMW */
-	val = intel_de_read(dev_priv, DKL_REFCLKIN_CTL(tc_port));
+	val = intel_dkl_phy_read(i915, DKL_REFCLKIN_CTL(tc_port));
 	val &= ~MG_REFCLKIN_CTL_OD_2_MUX_MASK;
 	val |= hw_state->mg_refclkin_ctl;
-	intel_de_write(dev_priv, DKL_REFCLKIN_CTL(tc_port), val);
+	intel_dkl_phy_write(i915, DKL_REFCLKIN_CTL(tc_port), val);
 
-	val = intel_de_read(dev_priv, DKL_CLKTOP2_CORECLKCTL1(tc_port));
+	val = intel_dkl_phy_read(i915, DKL_CLKTOP2_CORECLKCTL1(tc_port));
 	val &= ~MG_CLKTOP2_CORECLKCTL1_A_DIVRATIO_MASK;
 	val |= hw_state->mg_clktop2_coreclkctl1;
-	intel_de_write(dev_priv, DKL_CLKTOP2_CORECLKCTL1(tc_port), val);
+	intel_dkl_phy_write(i915, DKL_CLKTOP2_CORECLKCTL1(tc_port), val);
 
-	val = intel_de_read(dev_priv, DKL_CLKTOP2_HSCLKCTL(tc_port));
+	val = intel_dkl_phy_read(i915, DKL_CLKTOP2_HSCLKCTL(tc_port));
 	val &= ~(MG_CLKTOP2_HSCLKCTL_TLINEDRV_CLKSEL_MASK |
 		 MG_CLKTOP2_HSCLKCTL_CORE_INPUTSEL_MASK |
 		 MG_CLKTOP2_HSCLKCTL_HSDIV_RATIO_MASK |
 		 MG_CLKTOP2_HSCLKCTL_DSDIV_RATIO_MASK);
 	val |= hw_state->mg_clktop2_hsclkctl;
-	intel_de_write(dev_priv, DKL_CLKTOP2_HSCLKCTL(tc_port), val);
+	intel_dkl_phy_write(i915, DKL_CLKTOP2_HSCLKCTL(tc_port), val);
 
-	val = intel_de_read(dev_priv, DKL_PLL_DIV0(tc_port));
-	val &= ~(DKL_PLL_DIV0_INTEG_COEFF_MASK |
-		 DKL_PLL_DIV0_PROP_COEFF_MASK |
-		 DKL_PLL_DIV0_FBPREDIV_MASK |
-		 DKL_PLL_DIV0_FBDIV_INT_MASK);
-	val |= hw_state->mg_pll_div0;
-	intel_de_write(dev_priv, DKL_PLL_DIV0(tc_port), val);
+	val = DKL_PLL_DIV0_MASK;
+	if (i915->display.vbt.override_afc_startup)
+		val |= DKL_PLL_DIV0_AFC_STARTUP_MASK;
+	intel_dkl_phy_rmw(i915, DKL_PLL_DIV0(tc_port), val,
+			  hw_state->mg_pll_div0);
 
-	val = intel_de_read(dev_priv, DKL_PLL_DIV1(tc_port));
+	val = intel_dkl_phy_read(i915, DKL_PLL_DIV1(tc_port));
 	val &= ~(DKL_PLL_DIV1_IREF_TRIM_MASK |
 		 DKL_PLL_DIV1_TDC_TARGET_CNT_MASK);
 	val |= hw_state->mg_pll_div1;
-	intel_de_write(dev_priv, DKL_PLL_DIV1(tc_port), val);
+	intel_dkl_phy_write(i915, DKL_PLL_DIV1(tc_port), val);
 
-	val = intel_de_read(dev_priv, DKL_PLL_SSC(tc_port));
+	val = intel_dkl_phy_read(i915, DKL_PLL_SSC(tc_port));
 	val &= ~(DKL_PLL_SSC_IREF_NDIV_RATIO_MASK |
 		 DKL_PLL_SSC_STEP_LEN_MASK |
 		 DKL_PLL_SSC_STEP_NUM_MASK |
 		 DKL_PLL_SSC_EN);
 	val |= hw_state->mg_pll_ssc;
-	intel_de_write(dev_priv, DKL_PLL_SSC(tc_port), val);
+	intel_dkl_phy_write(i915, DKL_PLL_SSC(tc_port), val);
 
-	val = intel_de_read(dev_priv, DKL_PLL_BIAS(tc_port));
+	val = intel_dkl_phy_read(i915, DKL_PLL_BIAS(tc_port));
 	val &= ~(DKL_PLL_BIAS_FRAC_EN_H |
 		 DKL_PLL_BIAS_FBDIV_FRAC_MASK);
 	val |= hw_state->mg_pll_bias;
-	intel_de_write(dev_priv, DKL_PLL_BIAS(tc_port), val);
+	intel_dkl_phy_write(i915, DKL_PLL_BIAS(tc_port), val);
 
-	val = intel_de_read(dev_priv, DKL_PLL_TDC_COLDST_BIAS(tc_port));
+	val = intel_dkl_phy_read(i915, DKL_PLL_TDC_COLDST_BIAS(tc_port));
 	val &= ~(DKL_PLL_TDC_SSC_STEP_SIZE_MASK |
 		 DKL_PLL_TDC_FEED_FWD_GAIN_MASK);
 	val |= hw_state->mg_pll_tdc_coldst_bias;
-	intel_de_write(dev_priv, DKL_PLL_TDC_COLDST_BIAS(tc_port), val);
+	intel_dkl_phy_write(i915, DKL_PLL_TDC_COLDST_BIAS(tc_port), val);
 
-	intel_de_posting_read(dev_priv, DKL_PLL_TDC_COLDST_BIAS(tc_port));
+	intel_dkl_phy_posting_read(i915, DKL_PLL_TDC_COLDST_BIAS(tc_port));
 }
 
-static void icl_pll_power_enable(struct drm_i915_private *dev_priv,
+static void icl_pll_power_enable(struct drm_i915_private *i915,
 				 struct intel_shared_dpll *pll,
 				 i915_reg_t enable_reg)
 {
-	u32 val;
-
-	val = intel_de_read(dev_priv, enable_reg);
-	val |= PLL_POWER_ENABLE;
-	intel_de_write(dev_priv, enable_reg, val);
+	intel_de_rmw(i915, enable_reg, 0, PLL_POWER_ENABLE);
 
 	/*
 	 * The spec says we need to "wait" but it also says it should be
 	 * immediate.
 	 */
-	if (intel_de_wait_for_set(dev_priv, enable_reg, PLL_POWER_STATE, 1))
-		drm_err(&dev_priv->drm, "PLL %d Power not enabled\n",
+	if (intel_de_wait_for_set(i915, enable_reg, PLL_POWER_STATE, 1))
+		drm_err(&i915->drm, "PLL %d Power not enabled\n",
 			pll->info->id);
 }
 
-static void icl_pll_enable(struct drm_i915_private *dev_priv,
+static void icl_pll_enable(struct drm_i915_private *i915,
 			   struct intel_shared_dpll *pll,
 			   i915_reg_t enable_reg)
 {
-	u32 val;
-
-	val = intel_de_read(dev_priv, enable_reg);
-	val |= PLL_ENABLE;
-	intel_de_write(dev_priv, enable_reg, val);
+	intel_de_rmw(i915, enable_reg, 0, PLL_ENABLE);
 
 	/* Timeout is actually 600us. */
-	if (intel_de_wait_for_set(dev_priv, enable_reg, PLL_LOCK, 1))
-		drm_err(&dev_priv->drm, "PLL %d not locked\n", pll->info->id);
+	if (intel_de_wait_for_set(i915, enable_reg, PLL_LOCK, 1))
+		drm_err(&i915->drm, "PLL %d not locked\n", pll->info->id);
 }
 
-static void combo_pll_enable(struct drm_i915_private *dev_priv,
+static void adlp_cmtg_clock_gating_wa(struct drm_i915_private *i915, struct intel_shared_dpll *pll)
+{
+	u32 val;
+
+	if (!(IS_ALDERLAKE_P(i915) && IS_DISPLAY_STEP(i915, STEP_A0, STEP_B0)) ||
+	    pll->info->id != DPLL_ID_ICL_DPLL0)
+		return;
+	/*
+	 * Wa_16011069516:adl-p[a0]
+	 *
+	 * All CMTG regs are unreliable until CMTG clock gating is disabled,
+	 * so we can only assume the default TRANS_CMTG_CHICKEN reg value and
+	 * sanity check this assumption with a double read, which presumably
+	 * returns the correct value even with clock gating on.
+	 *
+	 * Instead of the usual place for workarounds we apply this one here,
+	 * since TRANS_CMTG_CHICKEN is only accessible while DPLL0 is enabled.
+	 */
+	val = intel_de_read(i915, TRANS_CMTG_CHICKEN);
+	val = intel_de_rmw(i915, TRANS_CMTG_CHICKEN, ~0, DISABLE_DPT_CLK_GATING);
+	if (drm_WARN_ON(&i915->drm, val & ~DISABLE_DPT_CLK_GATING))
+		drm_dbg_kms(&i915->drm, "Unexpected flags in TRANS_CMTG_CHICKEN: %08x\n", val);
+}
+
+static void combo_pll_enable(struct drm_i915_private *i915,
 			     struct intel_shared_dpll *pll)
 {
-	i915_reg_t enable_reg = intel_combo_pll_enable_reg(dev_priv, pll);
+	i915_reg_t enable_reg = intel_combo_pll_enable_reg(i915, pll);
 
-	if (IS_JSL_EHL(dev_priv) &&
+	if ((IS_JASPERLAKE(i915) || IS_ELKHARTLAKE(i915)) &&
 	    pll->info->id == DPLL_ID_EHL_DPLL4) {
 
 		/*
@@ -4113,13 +3842,13 @@ static void combo_pll_enable(struct drm_i915_private *dev_priv,
 		 * This can be done by taking a reference on DPLL4 power
 		 * domain.
 		 */
-		pll->wakeref = intel_display_power_get(dev_priv,
-						       POWER_DOMAIN_DPLL_DC_OFF);
+		pll->wakeref = intel_display_power_get(i915,
+						       POWER_DOMAIN_DC_OFF);
 	}
 
-	icl_pll_power_enable(dev_priv, pll, enable_reg);
+	icl_pll_power_enable(i915, pll, enable_reg);
 
-	icl_dpll_write(dev_priv, pll);
+	icl_dpll_write(i915, pll);
 
 	/*
 	 * DVFS pre sequence would be here, but in our driver the cdclk code
@@ -4127,17 +3856,19 @@ static void combo_pll_enable(struct drm_i915_private *dev_priv,
 	 * nothing here.
 	 */
 
-	icl_pll_enable(dev_priv, pll, enable_reg);
+	icl_pll_enable(i915, pll, enable_reg);
+
+	adlp_cmtg_clock_gating_wa(i915, pll);
 
 	/* DVFS post sequence would be here. See the comment above. */
 }
 
-static void tbt_pll_enable(struct drm_i915_private *dev_priv,
+static void tbt_pll_enable(struct drm_i915_private *i915,
 			   struct intel_shared_dpll *pll)
 {
-	icl_pll_power_enable(dev_priv, pll, TBT_PLL_ENABLE);
+	icl_pll_power_enable(i915, pll, TBT_PLL_ENABLE);
 
-	icl_dpll_write(dev_priv, pll);
+	icl_dpll_write(i915, pll);
 
 	/*
 	 * DVFS pre sequence would be here, but in our driver the cdclk code
@@ -4145,23 +3876,22 @@ static void tbt_pll_enable(struct drm_i915_private *dev_priv,
 	 * nothing here.
 	 */
 
-	icl_pll_enable(dev_priv, pll, TBT_PLL_ENABLE);
+	icl_pll_enable(i915, pll, TBT_PLL_ENABLE);
 
 	/* DVFS post sequence would be here. See the comment above. */
 }
 
-static void mg_pll_enable(struct drm_i915_private *dev_priv,
+static void mg_pll_enable(struct drm_i915_private *i915,
 			  struct intel_shared_dpll *pll)
 {
-	i915_reg_t enable_reg =
-		MG_PLL_ENABLE(icl_pll_id_to_tc_port(pll->info->id));
+	i915_reg_t enable_reg = intel_tc_pll_enable_reg(i915, pll);
 
-	icl_pll_power_enable(dev_priv, pll, enable_reg);
+	icl_pll_power_enable(i915, pll, enable_reg);
 
-	if (INTEL_GEN(dev_priv) >= 12)
-		dkl_pll_write(dev_priv, pll);
+	if (DISPLAY_VER(i915) >= 12)
+		dkl_pll_write(i915, pll);
 	else
-		icl_mg_pll_write(dev_priv, pll);
+		icl_mg_pll_write(i915, pll);
 
 	/*
 	 * DVFS pre sequence would be here, but in our driver the cdclk code
@@ -4169,93 +3899,87 @@ static void mg_pll_enable(struct drm_i915_private *dev_priv,
 	 * nothing here.
 	 */
 
-	icl_pll_enable(dev_priv, pll, enable_reg);
+	icl_pll_enable(i915, pll, enable_reg);
 
 	/* DVFS post sequence would be here. See the comment above. */
 }
 
-static void icl_pll_disable(struct drm_i915_private *dev_priv,
+static void icl_pll_disable(struct drm_i915_private *i915,
 			    struct intel_shared_dpll *pll,
 			    i915_reg_t enable_reg)
 {
-	u32 val;
-
 	/* The first steps are done by intel_ddi_post_disable(). */
 
 	/*
 	 * DVFS pre sequence would be here, but in our driver the cdclk code
 	 * paths should already be setting the appropriate voltage, hence we do
-	 * nothign here.
+	 * nothing here.
 	 */
 
-	val = intel_de_read(dev_priv, enable_reg);
-	val &= ~PLL_ENABLE;
-	intel_de_write(dev_priv, enable_reg, val);
+	intel_de_rmw(i915, enable_reg, PLL_ENABLE, 0);
 
 	/* Timeout is actually 1us. */
-	if (intel_de_wait_for_clear(dev_priv, enable_reg, PLL_LOCK, 1))
-		drm_err(&dev_priv->drm, "PLL %d locked\n", pll->info->id);
+	if (intel_de_wait_for_clear(i915, enable_reg, PLL_LOCK, 1))
+		drm_err(&i915->drm, "PLL %d locked\n", pll->info->id);
 
 	/* DVFS post sequence would be here. See the comment above. */
 
-	val = intel_de_read(dev_priv, enable_reg);
-	val &= ~PLL_POWER_ENABLE;
-	intel_de_write(dev_priv, enable_reg, val);
+	intel_de_rmw(i915, enable_reg, PLL_POWER_ENABLE, 0);
 
 	/*
 	 * The spec says we need to "wait" but it also says it should be
 	 * immediate.
 	 */
-	if (intel_de_wait_for_clear(dev_priv, enable_reg, PLL_POWER_STATE, 1))
-		drm_err(&dev_priv->drm, "PLL %d Power not disabled\n",
+	if (intel_de_wait_for_clear(i915, enable_reg, PLL_POWER_STATE, 1))
+		drm_err(&i915->drm, "PLL %d Power not disabled\n",
 			pll->info->id);
 }
 
-static void combo_pll_disable(struct drm_i915_private *dev_priv,
+static void combo_pll_disable(struct drm_i915_private *i915,
 			      struct intel_shared_dpll *pll)
 {
-	i915_reg_t enable_reg = intel_combo_pll_enable_reg(dev_priv, pll);
+	i915_reg_t enable_reg = intel_combo_pll_enable_reg(i915, pll);
 
-	icl_pll_disable(dev_priv, pll, enable_reg);
+	icl_pll_disable(i915, pll, enable_reg);
 
-	if (IS_JSL_EHL(dev_priv) &&
+	if ((IS_JASPERLAKE(i915) || IS_ELKHARTLAKE(i915)) &&
 	    pll->info->id == DPLL_ID_EHL_DPLL4)
-		intel_display_power_put(dev_priv, POWER_DOMAIN_DPLL_DC_OFF,
+		intel_display_power_put(i915, POWER_DOMAIN_DC_OFF,
 					pll->wakeref);
 }
 
-static void tbt_pll_disable(struct drm_i915_private *dev_priv,
+static void tbt_pll_disable(struct drm_i915_private *i915,
 			    struct intel_shared_dpll *pll)
 {
-	icl_pll_disable(dev_priv, pll, TBT_PLL_ENABLE);
+	icl_pll_disable(i915, pll, TBT_PLL_ENABLE);
 }
 
-static void mg_pll_disable(struct drm_i915_private *dev_priv,
+static void mg_pll_disable(struct drm_i915_private *i915,
 			   struct intel_shared_dpll *pll)
 {
-	i915_reg_t enable_reg =
-		MG_PLL_ENABLE(icl_pll_id_to_tc_port(pll->info->id));
+	i915_reg_t enable_reg = intel_tc_pll_enable_reg(i915, pll);
 
-	icl_pll_disable(dev_priv, pll, enable_reg);
+	icl_pll_disable(i915, pll, enable_reg);
 }
 
 static void icl_update_dpll_ref_clks(struct drm_i915_private *i915)
 {
 	/* No SSC ref */
-	i915->dpll.ref_clks.nssc = i915->cdclk.hw.ref;
+	i915->display.dpll.ref_clks.nssc = i915->display.cdclk.hw.ref;
 }
 
-static void icl_dump_hw_state(struct drm_i915_private *dev_priv,
+static void icl_dump_hw_state(struct drm_i915_private *i915,
 			      const struct intel_dpll_hw_state *hw_state)
 {
-	drm_dbg_kms(&dev_priv->drm,
-		    "dpll_hw_state: cfgcr0: 0x%x, cfgcr1: 0x%x, "
+	drm_dbg_kms(&i915->drm,
+		    "dpll_hw_state: cfgcr0: 0x%x, cfgcr1: 0x%x, div0: 0x%x, "
 		    "mg_refclkin_ctl: 0x%x, hg_clktop2_coreclkctl1: 0x%x, "
 		    "mg_clktop2_hsclkctl: 0x%x, mg_pll_div0: 0x%x, "
 		    "mg_pll_div2: 0x%x, mg_pll_lf: 0x%x, "
 		    "mg_pll_frac_lock: 0x%x, mg_pll_ssc: 0x%x, "
 		    "mg_pll_bias: 0x%x, mg_pll_tdc_coldst_bias: 0x%x\n",
 		    hw_state->cfgcr0, hw_state->cfgcr1,
+		    hw_state->div0,
 		    hw_state->mg_refclkin_ctl,
 		    hw_state->mg_clktop2_coreclkctl1,
 		    hw_state->mg_clktop2_hsclkctl,
@@ -4302,6 +4026,7 @@ static const struct dpll_info icl_plls[] = {
 
 static const struct intel_dpll_mgr icl_pll_mgr = {
 	.dpll_info = icl_plls,
+	.compute_dplls = icl_compute_dplls,
 	.get_dplls = icl_get_dplls,
 	.put_dplls = icl_put_dplls,
 	.update_active_dpll = icl_update_active_dpll,
@@ -4318,6 +4043,7 @@ static const struct dpll_info ehl_plls[] = {
 
 static const struct intel_dpll_mgr ehl_pll_mgr = {
 	.dpll_info = ehl_plls,
+	.compute_dplls = icl_compute_dplls,
 	.get_dplls = icl_get_dplls,
 	.put_dplls = icl_put_dplls,
 	.update_ref_clks = icl_update_dpll_ref_clks,
@@ -4346,6 +4072,7 @@ static const struct dpll_info tgl_plls[] = {
 
 static const struct intel_dpll_mgr tgl_pll_mgr = {
 	.dpll_info = tgl_plls,
+	.compute_dplls = icl_compute_dplls,
 	.get_dplls = icl_get_dplls,
 	.put_dplls = icl_put_dplls,
 	.update_active_dpll = icl_update_active_dpll,
@@ -4362,6 +4089,7 @@ static const struct dpll_info rkl_plls[] = {
 
 static const struct intel_dpll_mgr rkl_pll_mgr = {
 	.dpll_info = rkl_plls,
+	.compute_dplls = icl_compute_dplls,
 	.get_dplls = icl_get_dplls,
 	.put_dplls = icl_put_dplls,
 	.update_ref_clks = icl_update_dpll_ref_clks,
@@ -4378,63 +4106,138 @@ static const struct dpll_info dg1_plls[] = {
 
 static const struct intel_dpll_mgr dg1_pll_mgr = {
 	.dpll_info = dg1_plls,
+	.compute_dplls = icl_compute_dplls,
 	.get_dplls = icl_get_dplls,
 	.put_dplls = icl_put_dplls,
 	.update_ref_clks = icl_update_dpll_ref_clks,
 	.dump_hw_state = icl_dump_hw_state,
 };
 
+static const struct dpll_info adls_plls[] = {
+	{ "DPLL 0", &combo_pll_funcs, DPLL_ID_ICL_DPLL0, 0 },
+	{ "DPLL 1", &combo_pll_funcs, DPLL_ID_ICL_DPLL1, 0 },
+	{ "DPLL 2", &combo_pll_funcs, DPLL_ID_DG1_DPLL2, 0 },
+	{ "DPLL 3", &combo_pll_funcs, DPLL_ID_DG1_DPLL3, 0 },
+	{ },
+};
+
+static const struct intel_dpll_mgr adls_pll_mgr = {
+	.dpll_info = adls_plls,
+	.compute_dplls = icl_compute_dplls,
+	.get_dplls = icl_get_dplls,
+	.put_dplls = icl_put_dplls,
+	.update_ref_clks = icl_update_dpll_ref_clks,
+	.dump_hw_state = icl_dump_hw_state,
+};
+
+static const struct dpll_info adlp_plls[] = {
+	{ "DPLL 0", &combo_pll_funcs, DPLL_ID_ICL_DPLL0,  0 },
+	{ "DPLL 1", &combo_pll_funcs, DPLL_ID_ICL_DPLL1,  0 },
+	{ "TBT PLL",  &tbt_pll_funcs, DPLL_ID_ICL_TBTPLL, 0 },
+	{ "TC PLL 1", &dkl_pll_funcs, DPLL_ID_ICL_MGPLL1, 0 },
+	{ "TC PLL 2", &dkl_pll_funcs, DPLL_ID_ICL_MGPLL2, 0 },
+	{ "TC PLL 3", &dkl_pll_funcs, DPLL_ID_ICL_MGPLL3, 0 },
+	{ "TC PLL 4", &dkl_pll_funcs, DPLL_ID_ICL_MGPLL4, 0 },
+	{ },
+};
+
+static const struct intel_dpll_mgr adlp_pll_mgr = {
+	.dpll_info = adlp_plls,
+	.compute_dplls = icl_compute_dplls,
+	.get_dplls = icl_get_dplls,
+	.put_dplls = icl_put_dplls,
+	.update_active_dpll = icl_update_active_dpll,
+	.update_ref_clks = icl_update_dpll_ref_clks,
+	.dump_hw_state = icl_dump_hw_state,
+};
+
 /**
  * intel_shared_dpll_init - Initialize shared DPLLs
- * @dev: drm device
+ * @i915: i915 device
  *
- * Initialize shared DPLLs for @dev.
+ * Initialize shared DPLLs for @i915.
  */
-void intel_shared_dpll_init(struct drm_device *dev)
+void intel_shared_dpll_init(struct drm_i915_private *i915)
 {
-	struct drm_i915_private *dev_priv = to_i915(dev);
 	const struct intel_dpll_mgr *dpll_mgr = NULL;
 	const struct dpll_info *dpll_info;
 	int i;
 
-	if (IS_DG1(dev_priv))
+	mutex_init(&i915->display.dpll.lock);
+
+	if (DISPLAY_VER(i915) >= 14 || IS_DG2(i915))
+		/* No shared DPLLs on DG2; port PLLs are part of the PHY */
+		dpll_mgr = NULL;
+	else if (IS_ALDERLAKE_P(i915))
+		dpll_mgr = &adlp_pll_mgr;
+	else if (IS_ALDERLAKE_S(i915))
+		dpll_mgr = &adls_pll_mgr;
+	else if (IS_DG1(i915))
 		dpll_mgr = &dg1_pll_mgr;
-	else if (IS_ROCKETLAKE(dev_priv))
+	else if (IS_ROCKETLAKE(i915))
 		dpll_mgr = &rkl_pll_mgr;
-	else if (INTEL_GEN(dev_priv) >= 12)
+	else if (DISPLAY_VER(i915) >= 12)
 		dpll_mgr = &tgl_pll_mgr;
-	else if (IS_JSL_EHL(dev_priv))
+	else if (IS_JASPERLAKE(i915) || IS_ELKHARTLAKE(i915))
 		dpll_mgr = &ehl_pll_mgr;
-	else if (INTEL_GEN(dev_priv) >= 11)
+	else if (DISPLAY_VER(i915) >= 11)
 		dpll_mgr = &icl_pll_mgr;
-	else if (IS_CANNONLAKE(dev_priv))
-		dpll_mgr = &cnl_pll_mgr;
-	else if (IS_GEN9_BC(dev_priv))
-		dpll_mgr = &skl_pll_mgr;
-	else if (IS_GEN9_LP(dev_priv))
+	else if (IS_GEMINILAKE(i915) || IS_BROXTON(i915))
 		dpll_mgr = &bxt_pll_mgr;
-	else if (HAS_DDI(dev_priv))
+	else if (DISPLAY_VER(i915) == 9)
+		dpll_mgr = &skl_pll_mgr;
+	else if (HAS_DDI(i915))
 		dpll_mgr = &hsw_pll_mgr;
-	else if (HAS_PCH_IBX(dev_priv) || HAS_PCH_CPT(dev_priv))
+	else if (HAS_PCH_IBX(i915) || HAS_PCH_CPT(i915))
 		dpll_mgr = &pch_pll_mgr;
 
-	if (!dpll_mgr) {
-		dev_priv->dpll.num_shared_dpll = 0;
+	if (!dpll_mgr)
 		return;
-	}
 
 	dpll_info = dpll_mgr->dpll_info;
 
 	for (i = 0; dpll_info[i].name; i++) {
-		drm_WARN_ON(dev, i != dpll_info[i].id);
-		dev_priv->dpll.shared_dplls[i].info = &dpll_info[i];
+		if (drm_WARN_ON(&i915->drm,
+				i >= ARRAY_SIZE(i915->display.dpll.shared_dplls)))
+			break;
+
+		/* must fit into unsigned long bitmask on 32bit */
+		if (drm_WARN_ON(&i915->drm, dpll_info[i].id >= 32))
+			break;
+
+		i915->display.dpll.shared_dplls[i].info = &dpll_info[i];
+		i915->display.dpll.shared_dplls[i].index = i;
 	}
 
-	dev_priv->dpll.mgr = dpll_mgr;
-	dev_priv->dpll.num_shared_dpll = i;
-	mutex_init(&dev_priv->dpll.lock);
+	i915->display.dpll.mgr = dpll_mgr;
+	i915->display.dpll.num_shared_dpll = i;
+}
 
-	BUG_ON(dev_priv->dpll.num_shared_dpll > I915_NUM_PLLS);
+/**
+ * intel_compute_shared_dplls - compute DPLL state CRTC and encoder combination
+ * @state: atomic state
+ * @crtc: CRTC to compute DPLLs for
+ * @encoder: encoder
+ *
+ * This function computes the DPLL state for the given CRTC and encoder.
+ *
+ * The new configuration in the atomic commit @state is made effective by
+ * calling intel_shared_dpll_swap_state().
+ *
+ * Returns:
+ * 0 on success, negative error code on falure.
+ */
+int intel_compute_shared_dplls(struct intel_atomic_state *state,
+			       struct intel_crtc *crtc,
+			       struct intel_encoder *encoder)
+{
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	const struct intel_dpll_mgr *dpll_mgr = i915->display.dpll.mgr;
+
+	if (drm_WARN_ON(&i915->drm, !dpll_mgr))
+		return -EINVAL;
+
+	return dpll_mgr->compute_dplls(state, crtc, encoder);
 }
 
 /**
@@ -4454,17 +4257,18 @@ void intel_shared_dpll_init(struct drm_device *dev)
  * intel_release_shared_dplls().
  *
  * Returns:
- * True if all required DPLLs were successfully reserved.
+ * 0 if all required DPLLs were successfully reserved,
+ * negative error code otherwise.
  */
-bool intel_reserve_shared_dplls(struct intel_atomic_state *state,
-				struct intel_crtc *crtc,
-				struct intel_encoder *encoder)
+int intel_reserve_shared_dplls(struct intel_atomic_state *state,
+			       struct intel_crtc *crtc,
+			       struct intel_encoder *encoder)
 {
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
-	const struct intel_dpll_mgr *dpll_mgr = dev_priv->dpll.mgr;
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	const struct intel_dpll_mgr *dpll_mgr = i915->display.dpll.mgr;
 
-	if (drm_WARN_ON(&dev_priv->drm, !dpll_mgr))
-		return false;
+	if (drm_WARN_ON(&i915->drm, !dpll_mgr))
+		return -EINVAL;
 
 	return dpll_mgr->get_dplls(state, crtc, encoder);
 }
@@ -4483,8 +4287,8 @@ bool intel_reserve_shared_dplls(struct intel_atomic_state *state,
 void intel_release_shared_dplls(struct intel_atomic_state *state,
 				struct intel_crtc *crtc)
 {
-	struct drm_i915_private *dev_priv = to_i915(state->base.dev);
-	const struct intel_dpll_mgr *dpll_mgr = dev_priv->dpll.mgr;
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	const struct intel_dpll_mgr *dpll_mgr = i915->display.dpll.mgr;
 
 	/*
 	 * FIXME: this function is called for every platform having a
@@ -4512,10 +4316,10 @@ void intel_update_active_dpll(struct intel_atomic_state *state,
 			      struct intel_crtc *crtc,
 			      struct intel_encoder *encoder)
 {
-	struct drm_i915_private *dev_priv = to_i915(encoder->base.dev);
-	const struct intel_dpll_mgr *dpll_mgr = dev_priv->dpll.mgr;
+	struct drm_i915_private *i915 = to_i915(encoder->base.dev);
+	const struct intel_dpll_mgr *dpll_mgr = i915->display.dpll.mgr;
 
-	if (drm_WARN_ON(&dev_priv->drm, !dpll_mgr))
+	if (drm_WARN_ON(&i915->drm, !dpll_mgr))
 		return;
 
 	dpll_mgr->update_active_dpll(state, crtc, encoder);
@@ -4561,42 +4365,52 @@ static void readout_dpll_hw_state(struct drm_i915_private *i915,
 
 	pll->on = intel_dpll_get_hw_state(i915, pll, &pll->state.hw_state);
 
-	if (IS_JSL_EHL(i915) && pll->on &&
+	if ((IS_JASPERLAKE(i915) || IS_ELKHARTLAKE(i915)) &&
+	    pll->on &&
 	    pll->info->id == DPLL_ID_EHL_DPLL4) {
 		pll->wakeref = intel_display_power_get(i915,
-						       POWER_DOMAIN_DPLL_DC_OFF);
+						       POWER_DOMAIN_DC_OFF);
 	}
 
-	pll->state.crtc_mask = 0;
+	pll->state.pipe_mask = 0;
 	for_each_intel_crtc(&i915->drm, crtc) {
 		struct intel_crtc_state *crtc_state =
 			to_intel_crtc_state(crtc->base.state);
 
 		if (crtc_state->hw.active && crtc_state->shared_dpll == pll)
-			pll->state.crtc_mask |= 1 << crtc->pipe;
+			intel_reference_shared_dpll_crtc(crtc, pll, &pll->state);
 	}
-	pll->active_mask = pll->state.crtc_mask;
+	pll->active_mask = pll->state.pipe_mask;
 
 	drm_dbg_kms(&i915->drm,
-		    "%s hw state readout: crtc_mask 0x%08x, on %i\n",
-		    pll->info->name, pll->state.crtc_mask, pll->on);
+		    "%s hw state readout: pipe_mask 0x%x, on %i\n",
+		    pll->info->name, pll->state.pipe_mask, pll->on);
+}
+
+void intel_dpll_update_ref_clks(struct drm_i915_private *i915)
+{
+	if (i915->display.dpll.mgr && i915->display.dpll.mgr->update_ref_clks)
+		i915->display.dpll.mgr->update_ref_clks(i915);
 }
 
 void intel_dpll_readout_hw_state(struct drm_i915_private *i915)
 {
+	struct intel_shared_dpll *pll;
 	int i;
 
-	if (i915->dpll.mgr && i915->dpll.mgr->update_ref_clks)
-		i915->dpll.mgr->update_ref_clks(i915);
-
-	for (i = 0; i < i915->dpll.num_shared_dpll; i++)
-		readout_dpll_hw_state(i915, &i915->dpll.shared_dplls[i]);
+	for_each_shared_dpll(i915, pll, i)
+		readout_dpll_hw_state(i915, pll);
 }
 
 static void sanitize_dpll_state(struct drm_i915_private *i915,
 				struct intel_shared_dpll *pll)
 {
-	if (!pll->on || pll->active_mask)
+	if (!pll->on)
+		return;
+
+	adlp_cmtg_clock_gating_wa(i915, pll);
+
+	if (pll->active_mask)
 		return;
 
 	drm_dbg_kms(&i915->drm,
@@ -4609,29 +4423,30 @@ static void sanitize_dpll_state(struct drm_i915_private *i915,
 
 void intel_dpll_sanitize_state(struct drm_i915_private *i915)
 {
+	struct intel_shared_dpll *pll;
 	int i;
 
-	for (i = 0; i < i915->dpll.num_shared_dpll; i++)
-		sanitize_dpll_state(i915, &i915->dpll.shared_dplls[i]);
+	for_each_shared_dpll(i915, pll, i)
+		sanitize_dpll_state(i915, pll);
 }
 
 /**
  * intel_dpll_dump_hw_state - write hw_state to dmesg
- * @dev_priv: i915 drm device
+ * @i915: i915 drm device
  * @hw_state: hw state to be written to the log
  *
  * Write the relevant values in @hw_state to dmesg using drm_dbg_kms.
  */
-void intel_dpll_dump_hw_state(struct drm_i915_private *dev_priv,
+void intel_dpll_dump_hw_state(struct drm_i915_private *i915,
 			      const struct intel_dpll_hw_state *hw_state)
 {
-	if (dev_priv->dpll.mgr) {
-		dev_priv->dpll.mgr->dump_hw_state(dev_priv, hw_state);
+	if (i915->display.dpll.mgr) {
+		i915->display.dpll.mgr->dump_hw_state(i915, hw_state);
 	} else {
 		/* fallback for platforms that don't use the shared dpll
 		 * infrastructure
 		 */
-		drm_dbg_kms(&dev_priv->drm,
+		drm_dbg_kms(&i915->drm,
 			    "dpll_hw_state: dpll: 0x%x, dpll_md: 0x%x, "
 			    "fp0: 0x%x, fp1: 0x%x\n",
 			    hw_state->dpll,
@@ -4639,4 +4454,97 @@ void intel_dpll_dump_hw_state(struct drm_i915_private *dev_priv,
 			    hw_state->fp0,
 			    hw_state->fp1);
 	}
+}
+
+static void
+verify_single_dpll_state(struct drm_i915_private *i915,
+			 struct intel_shared_dpll *pll,
+			 struct intel_crtc *crtc,
+			 const struct intel_crtc_state *new_crtc_state)
+{
+	struct intel_dpll_hw_state dpll_hw_state;
+	u8 pipe_mask;
+	bool active;
+
+	memset(&dpll_hw_state, 0, sizeof(dpll_hw_state));
+
+	drm_dbg_kms(&i915->drm, "%s\n", pll->info->name);
+
+	active = intel_dpll_get_hw_state(i915, pll, &dpll_hw_state);
+
+	if (!(pll->info->flags & INTEL_DPLL_ALWAYS_ON)) {
+		I915_STATE_WARN(i915, !pll->on && pll->active_mask,
+				"pll in active use but not on in sw tracking\n");
+		I915_STATE_WARN(i915, pll->on && !pll->active_mask,
+				"pll is on but not used by any active pipe\n");
+		I915_STATE_WARN(i915, pll->on != active,
+				"pll on state mismatch (expected %i, found %i)\n",
+				pll->on, active);
+	}
+
+	if (!crtc) {
+		I915_STATE_WARN(i915,
+				pll->active_mask & ~pll->state.pipe_mask,
+				"more active pll users than references: 0x%x vs 0x%x\n",
+				pll->active_mask, pll->state.pipe_mask);
+
+		return;
+	}
+
+	pipe_mask = BIT(crtc->pipe);
+
+	if (new_crtc_state->hw.active)
+		I915_STATE_WARN(i915, !(pll->active_mask & pipe_mask),
+				"pll active mismatch (expected pipe %c in active mask 0x%x)\n",
+				pipe_name(crtc->pipe), pll->active_mask);
+	else
+		I915_STATE_WARN(i915, pll->active_mask & pipe_mask,
+				"pll active mismatch (didn't expect pipe %c in active mask 0x%x)\n",
+				pipe_name(crtc->pipe), pll->active_mask);
+
+	I915_STATE_WARN(i915, !(pll->state.pipe_mask & pipe_mask),
+			"pll enabled crtcs mismatch (expected 0x%x in 0x%x)\n",
+			pipe_mask, pll->state.pipe_mask);
+
+	I915_STATE_WARN(i915,
+			pll->on && memcmp(&pll->state.hw_state, &dpll_hw_state,
+					  sizeof(dpll_hw_state)),
+			"pll hw state mismatch\n");
+}
+
+void intel_shared_dpll_state_verify(struct intel_atomic_state *state,
+				    struct intel_crtc *crtc)
+{
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	const struct intel_crtc_state *old_crtc_state =
+		intel_atomic_get_old_crtc_state(state, crtc);
+	const struct intel_crtc_state *new_crtc_state =
+		intel_atomic_get_new_crtc_state(state, crtc);
+
+	if (new_crtc_state->shared_dpll)
+		verify_single_dpll_state(i915, new_crtc_state->shared_dpll,
+					 crtc, new_crtc_state);
+
+	if (old_crtc_state->shared_dpll &&
+	    old_crtc_state->shared_dpll != new_crtc_state->shared_dpll) {
+		u8 pipe_mask = BIT(crtc->pipe);
+		struct intel_shared_dpll *pll = old_crtc_state->shared_dpll;
+
+		I915_STATE_WARN(i915, pll->active_mask & pipe_mask,
+				"pll active mismatch (didn't expect pipe %c in active mask (0x%x))\n",
+				pipe_name(crtc->pipe), pll->active_mask);
+		I915_STATE_WARN(i915, pll->state.pipe_mask & pipe_mask,
+				"pll enabled crtcs mismatch (found %x in enabled mask (0x%x))\n",
+				pipe_name(crtc->pipe), pll->state.pipe_mask);
+	}
+}
+
+void intel_shared_dpll_verify_disabled(struct intel_atomic_state *state)
+{
+	struct drm_i915_private *i915 = to_i915(state->base.dev);
+	struct intel_shared_dpll *pll;
+	int i;
+
+	for_each_shared_dpll(i915, pll, i)
+		verify_single_dpll_state(i915, pll, NULL, NULL);
 }

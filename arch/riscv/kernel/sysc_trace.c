@@ -1,5 +1,6 @@
 #include <linux/linkage.h>
 #include <linux/ptrace.h>
+#include <linux/syscalls.h>
 #include <linux/slab.h>
 
 #define MAX_SYSCALL_TIMES   65536
@@ -45,7 +46,7 @@ asmlinkage void sysc_trace_exit(void) {
     }
 }
 
-asmlinkage long sys_syscreset(int pid) {
+SYSCALL_DEFINE1(syscreset, int, pid) {
     if(syscalls == 0) {
         syscalls = kmalloc_array(MAX_SYSCALL_TIMES, sizeof(struct TracedSyscall), GFP_NOWAIT);
         if(syscalls == 0)
@@ -57,7 +58,7 @@ asmlinkage long sys_syscreset(int pid) {
     return 0;
 }
 
-asmlinkage long sys_sysctrace(void) {
+SYSCALL_DEFINE0(sysctrace) {
     unsigned long i;
     for(i = 0; i < sysc_counter; ++i) {
         pr_notice(" [%3lu] %s (%d) %011lu %011lu\n",

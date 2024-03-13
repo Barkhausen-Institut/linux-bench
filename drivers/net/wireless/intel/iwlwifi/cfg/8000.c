@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2014, 2018-2019 Intel Corporation
+ * Copyright (C) 2014, 2018-2020, 2023 Intel Corporation
  * Copyright (C) 2014-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016 Intel Deutschland GmbH
  */
@@ -27,13 +27,13 @@
 #define IWL8260_SMEM_OFFSET		0x400000
 #define IWL8260_SMEM_LEN		0x68000
 
-#define IWL8000_FW_PRE "iwlwifi-8000C-"
+#define IWL8000_FW_PRE "iwlwifi-8000C"
 #define IWL8000_MODULE_FIRMWARE(api) \
-	IWL8000_FW_PRE __stringify(api) ".ucode"
+	IWL8000_FW_PRE "-" __stringify(api) ".ucode"
 
-#define IWL8265_FW_PRE "iwlwifi-8265-"
+#define IWL8265_FW_PRE "iwlwifi-8265"
 #define IWL8265_MODULE_FIRMWARE(api) \
-	IWL8265_FW_PRE __stringify(api) ".ucode"
+	IWL8265_FW_PRE "-" __stringify(api) ".ucode"
 
 #define DEFAULT_NVM_FILE_FAMILY_8000C		"nvmData-8000C"
 
@@ -125,7 +125,6 @@ const struct iwl_cfg iwl8260_2ac_cfg = {
 	IWL_DEVICE_8260,
 	.ht_params = &iwl8000_ht_params,
 	.nvm_ver = IWL8000_NVM_VERSION,
-	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
 };
 
 const struct iwl_cfg iwl8265_2ac_cfg = {
@@ -134,7 +133,6 @@ const struct iwl_cfg iwl8265_2ac_cfg = {
 	IWL_DEVICE_8265,
 	.ht_params = &iwl8000_ht_params,
 	.nvm_ver = IWL8000_NVM_VERSION,
-	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
 	.vht_mu_mimo_supported = true,
 };
 
@@ -144,7 +142,6 @@ const struct iwl_cfg iwl8275_2ac_cfg = {
 	IWL_DEVICE_8265,
 	.ht_params = &iwl8000_ht_params,
 	.nvm_ver = IWL8000_NVM_VERSION,
-	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
 	.vht_mu_mimo_supported = true,
 };
 
@@ -154,7 +151,6 @@ const struct iwl_cfg iwl4165_2ac_cfg = {
 	IWL_DEVICE_8000,
 	.ht_params = &iwl8000_ht_params,
 	.nvm_ver = IWL8000_NVM_VERSION,
-	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,
 };
 
 MODULE_FIRMWARE(IWL8000_MODULE_FIRMWARE(IWL8000_UCODE_API_MAX));

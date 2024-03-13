@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /*
  * Copyright (C) 2017 Intel Deutschland GmbH
- * Copyright (C) 2018-2020 Intel Corporation
+ * Copyright (C) 2018-2023 Intel Corporation
  */
 #ifndef __iwl_fw_runtime_h__
 #define __iwl_fw_runtime_h__
@@ -16,7 +16,7 @@
 #include "fw/acpi.h"
 
 struct iwl_fw_runtime_ops {
-	int (*dump_start)(void *ctx);
+	void (*dump_start)(void *ctx);
 	void (*dump_end)(void *ctx);
 	bool (*fw_running)(void *ctx);
 	int (*send_hcmd)(void *ctx, struct iwl_host_cmd *host_cmd);
@@ -24,6 +24,8 @@ struct iwl_fw_runtime_ops {
 };
 
 #define MAX_NUM_LMAC 2
+#define MAX_NUM_TCM 2
+#define MAX_NUM_RCM 2
 struct iwl_fwrt_shared_mem_cfg {
 	int num_lmacs;
 	int num_txfifo_entries;
@@ -96,6 +98,8 @@ struct iwl_txf_iter_data {
  * @cur_fw_img: current firmware image, must be maintained by
  *	the driver by calling &iwl_fw_set_current_image()
  * @dump: debug dump data
+ * @uats_enabled: VLP or AFC AP is enabled
+ * @uats_table: AP type table
  */
 struct iwl_fw_runtime {
 	struct iwl_trans *trans;
@@ -104,6 +108,9 @@ struct iwl_fw_runtime {
 
 	const struct iwl_fw_runtime_ops *ops;
 	void *ops_ctx;
+
+	const struct iwl_dump_sanitize_ops *sanitize_ops;
+	void *sanitize_ctx;
 
 	/* Paging */
 	struct iwl_fw_paging fw_paging_db[NUM_OF_FW_PAGING_BLOCKS];
@@ -126,6 +133,8 @@ struct iwl_fw_runtime {
 		unsigned long non_collect_ts_start[IWL_FW_INI_TIME_POINT_NUM];
 		u32 *d3_debug_data;
 		u32 lmac_err_id[MAX_NUM_LMAC];
+		u32 tcm_err_id[MAX_NUM_TCM];
+		u32 rcm_err_id[MAX_NUM_RCM];
 		u32 umac_err_id;
 
 		struct iwl_txf_iter_data txf_iter_data;
@@ -139,28 +148,41 @@ struct iwl_fw_runtime {
 			u32 umac_minor;
 		} fw_ver;
 	} dump;
-#ifdef CONFIG_IWLWIFI_DEBUGFS
 	struct {
+#ifdef CONFIG_IWLWIFI_DEBUGFS
 		struct delayed_work wk;
 		u32 delay;
+#endif
 		u64 seq;
 	} timestamp;
+#ifdef CONFIG_IWLWIFI_DEBUGFS
 	bool tpc_enabled;
 #endif /* CONFIG_IWLWIFI_DEBUGFS */
 #ifdef CONFIG_ACPI
 	struct iwl_sar_profile sar_profiles[ACPI_SAR_PROFILE_NUM];
 	u8 sar_chain_a_profile;
 	u8 sar_chain_b_profile;
-	struct iwl_geo_profile geo_profiles[ACPI_NUM_GEO_PROFILES];
+	struct iwl_geo_profile geo_profiles[ACPI_NUM_GEO_PROFILES_REV3];
 	u32 geo_rev;
-	union iwl_ppag_table_cmd ppag_table;
+	u32 geo_num_profiles;
+	bool geo_enabled;
+	struct iwl_ppag_chain ppag_chains[IWL_NUM_CHAIN_LIMITS];
+	u32 ppag_flags;
 	u32 ppag_ver;
+	bool ppag_table_valid;
+	struct iwl_sar_offset_mapping_cmd sgom_table;
+	bool sgom_enabled;
+	u8 reduced_power_flags;
+	bool uats_enabled;
+	struct iwl_uats_table_cmd uats_table;
 #endif
 };
 
 void iwl_fw_runtime_init(struct iwl_fw_runtime *fwrt, struct iwl_trans *trans,
 			const struct iwl_fw *fw,
 			const struct iwl_fw_runtime_ops *ops, void *ops_ctx,
+			const struct iwl_dump_sanitize_ops *sanitize_ops,
+			void *sanitize_ctx,
 			struct dentry *dbgfs_dir);
 
 static inline void iwl_fw_runtime_free(struct iwl_fw_runtime *fwrt)
@@ -190,5 +212,6 @@ void iwl_free_fw_paging(struct iwl_fw_runtime *fwrt);
 
 void iwl_get_shared_mem_conf(struct iwl_fw_runtime *fwrt);
 int iwl_set_soc_latency(struct iwl_fw_runtime *fwrt);
+int iwl_configure_rxq(struct iwl_fw_runtime *fwrt);
 
 #endif /* __iwl_fw_runtime_h__ */

@@ -2,8 +2,10 @@
 #ifndef PERF_BUILD_ID_H_
 #define PERF_BUILD_ID_H_ 1
 
-#define BUILD_ID_SIZE	20
+#define BUILD_ID_SIZE	20 /* SHA-1 length in bytes */
+#define BUILD_ID_MIN_SIZE	16 /* MD5/UUID/GUID length in bytes */
 #define SBUILD_ID_SIZE	(BUILD_ID_SIZE * 2 + 1)
+#define SBUILD_ID_MIN_SIZE	(BUILD_ID_MIN_SIZE * 2 + 1)
 
 #include "machine.h"
 #include "tool.h"
@@ -64,10 +66,18 @@ int build_id_cache__list_build_ids(const char *pathname, struct nsinfo *nsi,
 				   struct strlist **result);
 bool build_id_cache__cached(const char *sbuild_id);
 int build_id_cache__add(const char *sbuild_id, const char *name, const char *realname,
-			struct nsinfo *nsi, bool is_kallsyms, bool is_vdso);
-int build_id_cache__add_s(const char *sbuild_id,
-			  const char *name, struct nsinfo *nsi,
-			  bool is_kallsyms, bool is_vdso);
+			struct nsinfo *nsi, bool is_kallsyms, bool is_vdso,
+			const char *proper_name, const char *root_dir);
+int __build_id_cache__add_s(const char *sbuild_id,
+			    const char *name, struct nsinfo *nsi,
+			    bool is_kallsyms, bool is_vdso,
+			    const char *proper_name, const char *root_dir);
+static inline int build_id_cache__add_s(const char *sbuild_id,
+					const char *name, struct nsinfo *nsi,
+					bool is_kallsyms, bool is_vdso)
+{
+	return __build_id_cache__add_s(sbuild_id, name, nsi, is_kallsyms, is_vdso, NULL, NULL);
+}
 int build_id_cache__remove_s(const char *sbuild_id);
 
 extern char buildid_dir[];

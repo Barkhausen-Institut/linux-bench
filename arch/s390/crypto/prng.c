@@ -414,7 +414,7 @@ static int __init prng_sha512_instantiate(void)
 	}
 
 	/* append the seed by 16 bytes of unique nonce */
-	get_tod_clock_ext(seed + seedlen);
+	store_tod_clock_ext((union tod_clock *)(seed + seedlen));
 	seedlen += 16;
 
 	/* now initial seed of the prno drng */
@@ -528,7 +528,7 @@ static ssize_t prng_tdes_read(struct file *file, char __user *ubuf,
 			/* give mutex free before calling schedule() */
 			mutex_unlock(&prng_data->mutex);
 			schedule();
-			/* occopy mutex again */
+			/* occupy mutex again */
 			if (mutex_lock_interruptible(&prng_data->mutex)) {
 				if (ret == 0)
 					ret = -ERESTARTSYS;
@@ -907,5 +907,5 @@ static void __exit prng_exit(void)
 	}
 }
 
-module_cpu_feature_match(MSA, prng_init);
+module_cpu_feature_match(S390_CPU_FEATURE_MSA, prng_init);
 module_exit(prng_exit);

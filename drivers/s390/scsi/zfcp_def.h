@@ -129,7 +129,7 @@ struct zfcp_erp_action {
 	struct scsi_device *sdev;
 	u32		status;	      /* recovery status */
 	enum zfcp_erp_steps	step;	/* active step of this erp action */
-	unsigned long		fsf_req_id;
+	u64			fsf_req_id;
 	struct timer_list timer;
 };
 
@@ -156,14 +156,14 @@ struct zfcp_adapter {
 	u32			fsf_lic_version;
 	u32			adapter_features;  /* FCP channel features */
 	u32			connection_features; /* host connection features */
-        u32			hardware_version;  /* of FCP channel */
+	u32			hardware_version;  /* of FCP channel */
 	u32			fc_security_algorithms; /* of FCP channel */
 	u32			fc_security_algorithms_old; /* of FCP channel */
 	u16			timer_ticks;       /* time int for a tick */
 	struct Scsi_Host	*scsi_host;	   /* Pointer to mid-layer */
 	struct list_head	port_list;	   /* remote port list */
 	rwlock_t		port_list_lock;    /* port list lock */
-	unsigned long		req_no;		   /* unique FSF req number */
+	u64			req_no;		   /* unique FSF req number */
 	struct zfcp_reqlist	*req_list;
 	u32			fsf_req_seq_no;	   /* FSF cmnd seq number */
 	rwlock_t		abort_lock;        /* Protects against SCSI
@@ -180,7 +180,7 @@ struct zfcp_adapter {
 	rwlock_t		erp_lock;
 	wait_queue_head_t	erp_done_wqh;
 	struct zfcp_erp_action	erp_action;	   /* pending error recovery */
-        atomic_t                erp_counter;
+	atomic_t		erp_counter;
 	u32			erp_total_count;   /* total nr of enqueued erp
 						      actions */
 	u32			erp_low_mem_count; /* nr of erp actions waiting
@@ -217,7 +217,7 @@ struct zfcp_port {
 	u32		       d_id;	       /* D_ID */
 	u32		       handle;	       /* handle assigned by FSF */
 	struct zfcp_erp_action erp_action;     /* pending error recovery */
-        atomic_t               erp_counter;
+	atomic_t	       erp_counter;
 	u32                    maxframe_size;
 	u32                    supported_classes;
 	u32                    connection_info;
@@ -325,7 +325,7 @@ static inline u64 zfcp_scsi_dev_lun(struct scsi_device *sdev)
  */
 struct zfcp_fsf_req {
 	struct list_head	list;
-	unsigned long		req_id;
+	u64			req_id;
 	struct zfcp_adapter	*adapter;
 	struct zfcp_qdio_req	qdio_req;
 	struct completion	completion;

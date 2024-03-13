@@ -20,21 +20,19 @@ static struct snd_soc_card sof_nocodec_card = {
 };
 
 static int sof_nocodec_bes_setup(struct device *dev,
-				 const struct snd_sof_dsp_ops *ops,
+				 struct snd_soc_dai_driver *drv,
 				 struct snd_soc_dai_link *links,
-				 int link_num, struct snd_soc_card *card,
-				 int (*pcm_dai_link_fixup)(struct snd_soc_pcm_runtime *rtd,
-							   struct snd_pcm_hw_params *params))
+				 int link_num, struct snd_soc_card *card)
 {
 	struct snd_soc_dai_link_component *dlc;
 	int i;
 
-	if (!ops || !links || !card)
+	if (!drv || !links || !card)
 		return -EINVAL;
 
 	/* set up BE dai_links */
 	for (i = 0; i < link_num; i++) {
-		dlc = devm_kzalloc(dev, 3 * sizeof(*dlc), GFP_KERNEL);
+		dlc = devm_kcalloc(dev, 2, sizeof(*dlc), GFP_KERNEL);
 		if (!dlc)
 			return -ENOMEM;
 
@@ -46,8 +44,8 @@ static int sof_nocodec_bes_setup(struct device *dev,
 		links[i].stream_name = links[i].name;
 
 		links[i].cpus = &dlc[0];
-		links[i].codecs = &dlc[1];
-		links[i].platforms = &dlc[2];
+		links[i].codecs = &snd_soc_dummy_dlc;
+		links[i].platforms = &dlc[1];
 
 		links[i].num_cpus = 1;
 		links[i].num_codecs = 1;
@@ -55,16 +53,14 @@ static int sof_nocodec_bes_setup(struct device *dev,
 
 		links[i].id = i;
 		links[i].no_pcm = 1;
-		links[i].cpus->dai_name = ops->drv[i].name;
-		links[i].platforms->name = dev_name(dev);
-		links[i].codecs->dai_name = "snd-soc-dummy-dai";
-		links[i].codecs->name = "snd-soc-dummy";
-		if (ops->drv[i].playback.channels_min)
+		links[i].cpus->dai_name = drv[i].name;
+		links[i].platforms->name = dev_name(dev->parent);
+		if (drv[i].playback.channels_min)
 			links[i].dpcm_playback = 1;
-		if (ops->drv[i].capture.channels_min)
+		if (drv[i].capture.channels_min)
 			links[i].dpcm_capture = 1;
 
-		links[i].be_hw_params_fixup = pcm_dai_link_fixup;
+		links[i].be_hw_params_fixup = sof_pcm_dai_link_fixup;
 	}
 
 	card->dai_link = links;
@@ -73,41 +69,40 @@ static int sof_nocodec_bes_setup(struct device *dev,
 	return 0;
 }
 
-int sof_nocodec_setup(struct device *dev, const struct snd_sof_dsp_ops *ops,
-		      int (*pcm_dai_link_fixup)(struct snd_soc_pcm_runtime *rtd,
-						struct snd_pcm_hw_params *params))
+static int sof_nocodec_setup(struct device *dev,
+			     u32 num_dai_drivers,
+			     struct snd_soc_dai_driver *dai_drivers)
 {
 	struct snd_soc_dai_link *links;
 
 	/* create dummy BE dai_links */
-	links = devm_kzalloc(dev, sizeof(struct snd_soc_dai_link) *
-			     ops->num_drv, GFP_KERNEL);
+	links = devm_kcalloc(dev, num_dai_drivers, sizeof(struct snd_soc_dai_link), GFP_KERNEL);
 	if (!links)
 		return -ENOMEM;
 
-	return sof_nocodec_bes_setup(dev, ops, links, ops->num_drv,
-				     &sof_nocodec_card, pcm_dai_link_fixup);
+	return sof_nocodec_bes_setup(dev, dai_drivers, links, num_dai_drivers, &sof_nocodec_card);
 }
-EXPORT_SYMBOL(sof_nocodec_setup);
 
 static int sof_nocodec_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = &sof_nocodec_card;
+	struct snd_soc_acpi_mach *mach;
+	int ret;
 
 	card->dev = &pdev->dev;
 	card->topology_shortname_created = true;
+	mach = pdev->dev.platform_data;
+
+	ret = sof_nocodec_setup(card->dev, mach->mach_params.num_dai_drivers,
+				mach->mach_params.dai_drivers);
+	if (ret < 0)
+		return ret;
 
 	return devm_snd_soc_register_card(&pdev->dev, card);
 }
 
-static int sof_nocodec_remove(struct platform_device *pdev)
-{
-	return 0;
-}
-
 static struct platform_driver sof_nocodec_audio = {
 	.probe = sof_nocodec_probe,
-	.remove = sof_nocodec_remove,
 	.driver = {
 		.name = "sof-nocodec",
 		.pm = &snd_soc_pm_ops,

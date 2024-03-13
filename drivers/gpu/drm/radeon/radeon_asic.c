@@ -30,7 +30,6 @@
 #include <linux/pci.h>
 #include <linux/vgaarb.h>
 
-#include <drm/drm_crtc_helper.h>
 #include <drm/radeon_drm.h>
 
 #include "atom.h"
@@ -2477,6 +2476,9 @@ int radeon_asic_init(struct radeon_device *rdev)
 			rdev->num_crtc = 6;
 		if (rdev->family == CHIP_HAINAN) {
 			rdev->has_uvd = false;
+			rdev->has_vce = false;
+		} else if (rdev->family == CHIP_OLAND) {
+			rdev->has_uvd = true;
 			rdev->has_vce = false;
 		} else {
 			rdev->has_uvd = true;

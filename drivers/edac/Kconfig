@@ -53,8 +53,9 @@ config EDAC_DECODE_MCE
 	  has been initialized.
 
 config EDAC_GHES
-	bool "Output ACPI APEI/GHES BIOS detected errors via EDAC"
-	depends on ACPI_APEI_GHES && (EDAC=y)
+	tristate "Output ACPI APEI/GHES BIOS detected errors via EDAC"
+	depends on ACPI_APEI_GHES
+	select UEFI_CPER
 	help
 	  Not all machines support hardware-driven error report. Some of those
 	  provide a BIOS-driven error report mechanism via ACPI, using the
@@ -81,14 +82,13 @@ config EDAC_AMD64
 	  Support for error detection and correction of DRAM ECC errors on
 	  the AMD64 families (>= K8) of memory controllers.
 
-config EDAC_AMD64_ERROR_INJECTION
-	bool "Sysfs HW Error injection facilities"
-	depends on EDAC_AMD64
-	help
-	  Recent Opterons (Family 10h and later) provide for Memory Error
-	  Injection into the ECC detection circuits. The amd64_edac module
-	  allows the operator/user to inject Uncorrectable and Correctable
-	  errors into DRAM.
+	  When EDAC_DEBUG is enabled, hardware error injection facilities
+	  through sysfs are available:
+
+	  AMD CPUs up to and excluding family 0x17 provide for Memory
+	  Error Injection into the ECC detection circuits. The amd64_edac
+	  module allows the operator/user to inject Uncorrectable and
+	  Correctable errors into DRAM.
 
 	  When enabled, in each of the respective memory controller directories
 	  (/sys/devices/system/edac/mc/mcX), there are 3 input files:
@@ -211,6 +211,7 @@ config EDAC_R82600
 config EDAC_I5000
 	tristate "Intel Greencreek/Blackford chipset"
 	depends on X86 && PCI
+	depends on BROKEN
 	help
 	  Support for error detection and correction the Intel
 	  Greekcreek/Blackford chipsets.
@@ -263,6 +264,7 @@ config EDAC_I10NM
 config EDAC_PND2
 	tristate "Intel Pondicherry2"
 	depends on PCI && X86_64 && X86_MCE_INTEL
+	select P2SB if X86
 	help
 	  Support for error detection and correction on the Intel
 	  Pondicherry2 Integrated Memory Controller. This SoC IP is
@@ -271,7 +273,8 @@ config EDAC_PND2
 
 config EDAC_IGEN6
 	tristate "Intel client SoC Integrated MC"
-	depends on PCI && X86_64 && PCI_MMCONFIG && ARCH_HAVE_NMI_SAFE_CMPXCHG
+	depends on PCI && PCI_MMCONFIG && ARCH_HAVE_NMI_SAFE_CMPXCHG
+	depends on X86_64 && X86_MCE_INTEL
 	help
 	  Support for error detection and correction on the Intel
 	  client SoC Integrated Memory Controller using In-Band ECC IP.
@@ -397,7 +400,7 @@ config EDAC_THUNDERX
 
 config EDAC_ALTERA
 	bool "Altera SOCFPGA ECC"
-	depends on EDAC=y && (ARCH_SOCFPGA || ARCH_STRATIX10)
+	depends on EDAC=y && ARCH_INTEL_SOCFPGA
 	help
 	  Support for error detection and correction on the
 	  Altera SOCs. This is the global enable for the
@@ -471,7 +474,7 @@ config EDAC_ALTERA_SDMMC
 
 config EDAC_SIFIVE
 	bool "Sifive platform EDAC driver"
-	depends on EDAC=y && SIFIVE_L2
+	depends on EDAC=y && SIFIVE_CCACHE
 	help
 	  Support for error detection and correction on the SiFive SoCs.
 
@@ -484,7 +487,7 @@ config EDAC_ARMADA_XP
 
 config EDAC_SYNOPSYS
 	tristate "Synopsys DDR Memory Controller"
-	depends on ARCH_ZYNQ || ARCH_ZYNQMP
+	depends on ARCH_ZYNQ || ARCH_ZYNQMP || ARCH_INTEL_SOCFPGA || ARCH_MXC
 	help
 	  Support for error detection and correction on the Synopsys DDR
 	  memory controller.
@@ -538,5 +541,36 @@ config EDAC_DMC520
 	help
 	  Support for error detection and correction on the
 	  SoCs with ARM DMC-520 DRAM controller.
+
+config EDAC_ZYNQMP
+	tristate "Xilinx ZynqMP OCM Controller"
+	depends on ARCH_ZYNQMP || COMPILE_TEST
+	help
+	  This driver supports error detection and correction for the
+	  Xilinx ZynqMP OCM (On Chip Memory) controller. It can also be
+	  built as a module. In that case it will be called zynqmp_edac.
+
+config EDAC_NPCM
+	tristate "Nuvoton NPCM DDR Memory Controller"
+	depends on (ARCH_NPCM || COMPILE_TEST)
+	help
+	  Support for error detection and correction on the Nuvoton NPCM DDR
+	  memory controller.
+
+	  The memory controller supports single bit error correction, double bit
+	  error detection (in-line ECC in which a section 1/8th of the memory
+	  device used to store data is used for ECC storage).
+
+config EDAC_VERSAL
+	tristate "Xilinx Versal DDR Memory Controller"
+	depends on ARCH_ZYNQMP || COMPILE_TEST
+	help
+	  Support for error detection and correction on the Xilinx Versal DDR
+	  memory controller.
+
+	  Report both single bit errors (CE) and double bit errors (UE).
+	  Support injecting both correctable and uncorrectable errors
+	  for debugging purposes.
+
 
 endif # EDAC

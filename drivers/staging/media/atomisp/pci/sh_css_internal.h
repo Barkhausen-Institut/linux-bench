@@ -20,11 +20,9 @@
 #include <math_support.h>
 #include <type_support.h>
 #include <platform_support.h>
-#include <stdarg.h>
+#include <linux/stdarg.h>
 
-#if !defined(ISP2401)
 #include "input_formatter.h"
-#endif
 #include "input_system.h"
 
 #include "ia_css_types.h"
@@ -86,36 +84,7 @@
 #define SH_CSS_MAX_IF_CONFIGS	3 /* Must match with IA_CSS_NR_OF_CONFIGS (not defined yet).*/
 #define SH_CSS_IF_CONFIG_NOT_NEEDED	0xFF
 
-#define SH_CSS_ENABLE_METADATA
-
-#if defined(SH_CSS_ENABLE_METADATA) && !defined(ISP2401)
-#define SH_CSS_ENABLE_METADATA_THREAD
-#endif
-
-/*
- * SH_CSS_MAX_SP_THREADS:
- *	 sp threads visible to host with connected communication queues
- *	 these threads are capable of running an image pipe
- * SH_CSS_MAX_SP_INTERNAL_THREADS:
- *	 internal sp service threads, no communication queues to host
- *	 these threads can't be used as image pipe
- */
-
-#if defined(SH_CSS_ENABLE_METADATA_THREAD)
-#define SH_CSS_SP_INTERNAL_METADATA_THREAD	1
-#else
-#define SH_CSS_SP_INTERNAL_METADATA_THREAD	0
-#endif
-
-#define SH_CSS_SP_INTERNAL_SERVICE_THREAD		1
-
 #define SH_CSS_MAX_SP_THREADS		5
-
-#define SH_CSS_MAX_SP_INTERNAL_THREADS	(\
-	 SH_CSS_SP_INTERNAL_SERVICE_THREAD +\
-	 SH_CSS_SP_INTERNAL_METADATA_THREAD)
-
-#define SH_CSS_MAX_PIPELINES	SH_CSS_MAX_SP_THREADS
 
 /**
  * The C99 standard does not specify the exact object representation of structs;
@@ -276,7 +245,7 @@ struct sh_css_binary_args {
 	struct ia_css_frame *in_frame;	     /* input frame */
 	const struct ia_css_frame
 		*delay_frames[MAX_NUM_VIDEO_DELAY_FRAMES];   /* reference input frame */
-	const struct ia_css_frame *tnr_frames[NUM_TNR_FRAMES];   /* tnr frames */
+	const struct ia_css_frame *tnr_frames[NUM_VIDEO_TNR_FRAMES];   /* tnr frames */
 	struct ia_css_frame
 		*out_frame[IA_CSS_BINARY_MAX_OUTPUT_PORTS];      /* output frame */
 	struct ia_css_frame *out_vf_frame;   /* viewfinder output frame */
@@ -363,14 +332,12 @@ struct sh_css_sp_debug_command {
 	u32 dma_sw_reg;
 };
 
-#if !defined(ISP2401)
 /* SP input formatter configuration.*/
 struct sh_css_sp_input_formatter_set {
 	u32				stream_format;
 	input_formatter_cfg_t	config_a;
 	input_formatter_cfg_t	config_b;
 };
-#endif
 
 #define IA_CSS_MIPI_SIZE_CHECK_MAX_NOF_ENTRIES_PER_PORT (3)
 
@@ -383,7 +350,7 @@ struct sh_css_sp_config {
 	     frames are locked when their EOF event is successfully sent to the
 	     host (true) or when they are passed to the preview/video pipe
 	     (false). */
-#if !defined(ISP2401)
+
 	struct {
 		u8					a_changed;
 		u8					b_changed;
@@ -391,15 +358,13 @@ struct sh_css_sp_config {
 		struct sh_css_sp_input_formatter_set
 			set[SH_CSS_MAX_IF_CONFIGS]; /* CSI-2 port is used as index. */
 	} input_formatter;
-#endif
-#if !defined(ISP2401)
+
 	sync_generator_cfg_t	sync_gen;
 	tpg_cfg_t		tpg;
 	prbs_cfg_t		prbs;
 	input_system_cfg_t	input_circuit;
 	u8			input_circuit_cfg_changed;
 	u32		mipi_sizes_for_check[N_CSI_PORTS][IA_CSS_MIPI_SIZE_CHECK_MAX_NOF_ENTRIES_PER_PORT];
-#endif
 	u8                 enable_isys_event_queue;
 	u8			disable_cont_vf;
 };
@@ -415,7 +380,6 @@ enum sh_css_stage_type {
 #define SH_CSS_PIPE_CONFIG_SAMPLE_PARAMS_MASK \
 	((SH_CSS_PIPE_CONFIG_SAMPLE_PARAMS << SH_CSS_MAX_SP_THREADS) - 1)
 
-#if defined(ISP2401)
 struct sh_css_sp_pipeline_terminal {
 	union {
 		/* Input System 2401 */
@@ -448,7 +412,6 @@ struct sh_css_sp_pipeline_io_status {
 	u32	running[N_INPUT_SYSTEM_CSI_PORT];	/** configured streams */
 };
 
-#endif
 enum sh_css_port_dir {
 	SH_CSS_PORT_INPUT  = 0,
 	SH_CSS_PORT_OUTPUT  = 1
@@ -494,16 +457,6 @@ ia_css_metadata_free_multiple(unsigned int num_bufs,
 
 /* Macro for handling pipe_qos_config */
 #define QOS_INVALID                  (~0U)
-#define QOS_ALL_STAGES_DISABLED      (0U)
-#define QOS_STAGE_MASK(num)          (0x00000001 << num)
-#define SH_CSS_IS_QOS_PIPE(pipe)               ((pipe)->pipe_qos_config != QOS_INVALID)
-#define SH_CSS_QOS_STAGE_ENABLE(pipe, num)     ((pipe)->pipe_qos_config |= QOS_STAGE_MASK(num))
-#define SH_CSS_QOS_STAGE_DISABLE(pipe, num)    ((pipe)->pipe_qos_config &= ~QOS_STAGE_MASK(num))
-#define SH_CSS_QOS_STAGE_IS_ENABLED(pipe, num) ((pipe)->pipe_qos_config & QOS_STAGE_MASK(num))
-#define SH_CSS_QOS_STAGE_IS_ALL_DISABLED(pipe) ((pipe)->pipe_qos_config == QOS_ALL_STAGES_DISABLED)
-#define SH_CSS_QOS_MODE_PIPE_ADD(mode, pipe)    ((mode) |= (0x1 << (pipe)->pipe_id))
-#define SH_CSS_QOS_MODE_PIPE_REMOVE(mode, pipe) ((mode) &= ~(0x1 << (pipe)->pipe_id))
-#define SH_CSS_IS_QOS_ONLY_MODE(mode)           ((mode) == (0x1 << IA_CSS_PIPE_ID_ACC))
 
 /* Information for a pipeline */
 struct sh_css_sp_pipeline {
@@ -526,7 +479,6 @@ struct sh_css_sp_pipeline {
 				  this struct; needs cleanup */
 	s32 num_execs; /* number of times to run if this is
 			      an acceleration pipe. */
-#if defined(SH_CSS_ENABLE_METADATA)
 	struct {
 		u32        format;   /* Metadata format in hrt format */
 		u32        width;    /* Width of a line */
@@ -535,10 +487,7 @@ struct sh_css_sp_pipeline {
 		u32        size;     /* Total size (in bytes) */
 		ia_css_ptr    cont_buf; /* Address of continuous buffer */
 	} metadata;
-#endif
-#if defined(SH_CSS_ENABLE_PER_FRAME_PARAMS)
 	u32	output_frame_queue_id;
-#endif
 	union {
 		struct {
 			u32	bytes_available;
@@ -551,14 +500,6 @@ struct sh_css_sp_pipeline {
 			u32	raw_bit_depth;
 		} raw;
 	} copy;
-
-/* ISP2401 */
-
-	/* Parameters passed to Shading Correction kernel. */
-	struct {
-		u32 internal_frame_origin_x_bqs_on_sctbl; /* Origin X (bqs) of internal frame on shading table */
-		u32 internal_frame_origin_y_bqs_on_sctbl; /* Origin Y (bqs) of internal frame on shading table */
-	} shading;
 };
 
 /*
@@ -580,9 +521,7 @@ struct ia_css_frames_sp {
 	struct ia_css_frame_sp_info internal_frame_info;
 	struct ia_css_buffer_sp s3a_buf;
 	struct ia_css_buffer_sp dvs_buf;
-#if defined SH_CSS_ENABLE_METADATA
 	struct ia_css_buffer_sp metadata_buf;
-#endif
 };
 
 /* Information for a single pipeline stage for an ISP */
@@ -671,10 +610,8 @@ struct sh_css_sp_stage {
 struct sh_css_sp_group {
 	struct sh_css_sp_config		config;
 	struct sh_css_sp_pipeline	pipe[SH_CSS_MAX_SP_THREADS];
-#if defined(ISP2401)
 	struct sh_css_sp_pipeline_io	pipe_io[SH_CSS_MAX_SP_THREADS];
 	struct sh_css_sp_pipeline_io_status	pipe_io_status;
-#endif
 	struct sh_css_sp_debug_command	debug;
 };
 
@@ -694,8 +631,6 @@ struct sh_css_sp_output {
 #endif
 	unsigned int		sw_interrupt_value[SH_CSS_NUM_SDW_IRQS];
 };
-
-#define CONFIG_ON_FRAME_ENQUEUE() 0
 
 /**
  * @brief Data structure for the circular buffer.
@@ -734,9 +669,6 @@ struct sh_css_hmm_buffer {
 			u32	exp_id;
 			u32	isp_parameters_id; /** Unique ID to track which config was
 								actually applied to a particular frame */
-#if CONFIG_ON_FRAME_ENQUEUE()
-			struct sh_css_config_on_frame_enqueue config_on_frame_enqueue;
-#endif
 		} frame;
 		ia_css_ptr ddr_ptrs;
 	} payload;
@@ -752,16 +684,9 @@ struct sh_css_hmm_buffer {
 	clock_value_t isys_eof_clock_tick;
 };
 
-#if CONFIG_ON_FRAME_ENQUEUE()
-#define SIZE_OF_FRAME_STRUCT						\
-	(SIZE_OF_HRT_VADDRESS +						\
-	(3 * sizeof(uint32_t)) +					\
-	sizeof(uint32_t))
-#else
 #define SIZE_OF_FRAME_STRUCT						\
 	(SIZE_OF_HRT_VADDRESS +						\
 	(3 * sizeof(uint32_t)))
-#endif
 
 #define SIZE_OF_PAYLOAD_UNION						\
 	(MAX(MAX(MAX(MAX(						\
@@ -939,9 +864,6 @@ sh_css_params_init(void);
 void
 sh_css_params_uninit(void);
 
-/* For Acceleration API: Flush FW (shared buffer pointer) arguments */
-void sh_css_flush(struct ia_css_acc_fw *fw);
-
 void
 sh_css_binary_args_reset(struct sh_css_binary_args *args);
 
@@ -967,13 +889,11 @@ sh_css_frame_info_set_width(struct ia_css_frame_info *info,
 			    unsigned int width,
 			    unsigned int aligned);
 
-#if !defined(ISP2401)
 
 unsigned int
 sh_css_get_mipi_sizes_for_check(const unsigned int port,
 				const unsigned int idx);
 
-#endif
 
 ia_css_ptr
 sh_css_store_sp_group_to_ddr(void);
@@ -1016,11 +936,9 @@ sh_css_continuous_is_enabled(uint8_t pipe_num);
 struct ia_css_pipe *
 find_pipe_by_num(uint32_t pipe_num);
 
-#ifdef ISP2401
 void
 ia_css_get_crop_offsets(
     struct ia_css_pipe *pipe,
     struct ia_css_frame_info *in_frame);
-#endif
 
 #endif /* _SH_CSS_INTERNAL_H_ */

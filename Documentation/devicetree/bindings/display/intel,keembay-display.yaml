@@ -4,7 +4,7 @@
 $id: http://devicetree.org/schemas/display/intel,keembay-display.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Devicetree bindings for Intel Keem Bay display controller
+title: Intel Keem Bay display controller
 
 maintainers:
   - Anitha Chrisanthus <anitha.chrisanthus@intel.com>
@@ -36,7 +36,7 @@ properties:
     maxItems: 1
 
   port:
-    type: object
+    $ref: /schemas/graph.yaml#/properties/port
     description: Display output node to DSI.
 
 required:

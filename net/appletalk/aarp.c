@@ -664,7 +664,7 @@ out_unlock:
 
 sendit:
 	if (skb->sk)
-		skb->priority = skb->sk->sk_priority;
+		skb->priority = READ_ONCE(skb->sk->sk_priority);
 	if (dev_queue_xmit(skb))
 		goto drop;
 sent:
@@ -768,7 +768,7 @@ static int aarp_rcv(struct sk_buff *skb, struct net_device *dev,
 	if (a && a->status & ATIF_PROBE) {
 		a->status |= ATIF_PROBE_FAIL;
 		/*
-		 * we do not respond to probe or request packets for
+		 * we do not respond to probe or request packets of
 		 * this address while we are probing this address
 		 */
 		goto unlock;

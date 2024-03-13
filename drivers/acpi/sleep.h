@@ -8,7 +8,6 @@ extern struct list_head acpi_wakeup_device_list;
 extern struct mutex acpi_device_lock;
 
 extern void acpi_resume_power_resources(void);
-extern void acpi_turn_off_unused_power_resources(void);
 
 static inline acpi_status acpi_set_waking_vector(u32 wakeup_address)
 {
@@ -19,6 +18,7 @@ static inline acpi_status acpi_set_waking_vector(u32 wakeup_address)
 extern int acpi_s2idle_begin(void);
 extern int acpi_s2idle_prepare(void);
 extern int acpi_s2idle_prepare_late(void);
+extern void acpi_s2idle_check(void);
 extern bool acpi_s2idle_wake(void);
 extern void acpi_s2idle_restore_early(void);
 extern void acpi_s2idle_restore(void);

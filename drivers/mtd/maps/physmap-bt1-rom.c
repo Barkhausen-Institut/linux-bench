@@ -14,7 +14,6 @@
 #include <linux/mtd/xip.h>
 #include <linux/mux/consumer.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/string.h>
 #include <linux/types.h>
@@ -79,7 +78,7 @@ static void __xipram bt1_rom_map_copy_from(struct map_info *map,
 	if (shift) {
 		chunk = min_t(ssize_t, 4 - shift, len);
 		data = readl_relaxed(src - shift);
-		memcpy(to, &data + shift, chunk);
+		memcpy(to, (char *)&data + shift, chunk);
 		src += chunk;
 		to += chunk;
 		len -= chunk;

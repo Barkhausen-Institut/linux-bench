@@ -30,7 +30,7 @@ that purpose, selection target ``V4L2_SEL_TGT_COMPOSE`` is supported on the
 sink pad (0).
 
 Additionally, if a device has no scaler or digital crop functionality, the
-source pad (1) expses another digital crop selection rectangle that can only
+source pad (1) exposes another digital crop selection rectangle that can only
 crop at the end of the lines and frames.
 
 Scaler
@@ -56,6 +56,36 @@ analogue data is never read from the pixel matrix that are outside the
 configured selection rectangle that designates crop. The difference has an
 effect in device timing and likely also in power consumption.
 
+CCS static data
+---------------
+
+The MIPI CCS driver supports CCS static data for all compliant devices,
+including not just those compliant with CCS 1.1 but also CCS 1.0 and SMIA(++).
+For CCS the file names are formed as
+
+	ccs/ccs-sensor-vvvv-mmmm-rrrr.fw (sensor) and
+	ccs/ccs-module-vvvv-mmmm-rrrr.fw (module).
+
+For SMIA++ compliant devices the corresponding file names are
+
+	ccs/smiapp-sensor-vv-mmmm-rr.fw (sensor) and
+	ccs/smiapp-module-vv-mmmm-rrrr.fw (module).
+
+For SMIA (non-++) compliant devices the static data file name is
+
+	ccs/smia-sensor-vv-mmmm-rr.fw (sensor).
+
+vvvv or vv denotes MIPI and SMIA manufacturer IDs respectively, mmmm model ID
+and rrrr or rr revision number.
+
+CCS tools
+~~~~~~~~~
+
+`CCS tools <https://github.com/MIPI-Alliance/ccs-tools/>`_ is a set of
+tools for working with CCS static data files. CCS tools includes a
+definition of the human-readable CCS static data YAML format and includes a
+program to convert it to a binary.
+
 Register definition generator
 -----------------------------
 
@@ -78,5 +108,18 @@ definitions:
 		-L drivers/media/i2c/ccs/ccs-limits.h \
 		-l drivers/media/i2c/ccs/ccs-limits.c \
 		-c Documentation/driver-api/media/drivers/ccs/ccs-regs.asc
+
+CCS PLL calculator
+==================
+
+The CCS PLL calculator is used to compute the PLL configuration, given sensor's
+capabilities as well as board configuration and user specified configuration. As
+the configuration space that encompasses all these configurations is vast, the
+PLL calculator isn't entirely trivial. Yet it is relatively simple to use for a
+driver.
+
+The PLL model implemented by the PLL calculator corresponds to MIPI CCS 1.1.
+
+.. kernel-doc:: drivers/media/i2c/ccs-pll.h
 
 **Copyright** |copy| 2020 Intel Corporation

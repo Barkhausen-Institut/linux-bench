@@ -23,6 +23,8 @@
 #include <asm/atariints.h>
 #include <asm/machdep.h>
 
+#include "atari.h"
+
 DEFINE_SPINLOCK(rtc_lock);
 EXPORT_SYMBOL_GPL(rtc_lock);
 
@@ -317,10 +319,3 @@ int atari_tt_hwclk( int op, struct rtc_time *t )
 
     return( 0 );
 }
-
-/*
- * Local variables:
- *  c-indent-level: 4
- *  tab-width: 8
- * End:
- */

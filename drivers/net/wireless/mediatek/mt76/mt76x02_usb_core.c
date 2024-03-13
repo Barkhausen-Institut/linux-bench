@@ -72,6 +72,7 @@ int mt76x02u_tx_prepare_skb(struct mt76_dev *mdev, void *data,
 	bool ampdu = IEEE80211_SKB_CB(tx_info->skb)->flags & IEEE80211_TX_CTL_AMPDU;
 	enum mt76_qsel qsel;
 	u32 flags;
+	int err;
 
 	mt76_insert_hdr_pad(tx_info->skb);
 
@@ -106,7 +107,12 @@ int mt76x02u_tx_prepare_skb(struct mt76_dev *mdev, void *data,
 		ewma_pktlen_add(&msta->pktlen, tx_info->skb->len);
 	}
 
-	return mt76x02u_skb_dma_info(tx_info->skb, WLAN_PORT, flags);
+	err = mt76x02u_skb_dma_info(tx_info->skb, WLAN_PORT, flags);
+	if (err && wcid)
+		/* Release pktid in case of error. */
+		idr_remove(&wcid->pktid, pid);
+
+	return err;
 }
 EXPORT_SYMBOL_GPL(mt76x02u_tx_prepare_skb);
 
@@ -176,7 +182,9 @@ static void mt76x02u_pre_tbtt_work(struct work_struct *work)
 {
 	struct mt76x02_dev *dev =
 		container_of(work, struct mt76x02_dev, pre_tbtt_work);
-	struct beacon_bc_data data = {};
+	struct beacon_bc_data data = {
+		.dev = dev,
+	};
 	struct sk_buff *skb;
 	int nbeacons;
 
@@ -186,15 +194,20 @@ static void mt76x02u_pre_tbtt_work(struct work_struct *work)
 	if (mt76_hw(dev)->conf.flags & IEEE80211_CONF_OFFCHANNEL)
 		return;
 
+	__skb_queue_head_init(&data.q);
+
 	mt76x02_resync_beacon_timer(dev);
 
 	/* Prevent corrupt transmissions during update */
 	mt76_set(dev, MT_BCN_BYPASS_MASK, 0xffff);
 	dev->beacon_data_count = 0;
 
-	ieee80211_iterate_active_interfaces(mt76_hw(dev),
+	ieee80211_iterate_active_interfaces_atomic(mt76_hw(dev),
 		IEEE80211_IFACE_ITER_RESUME_ALL,
-		mt76x02_update_beacon_iter, dev);
+		mt76x02_update_beacon_iter, &data);
+
+	while ((skb = __skb_dequeue(&data.q)) != NULL)
+		mt76x02_mac_set_beacon(dev, skb);
 
 	mt76_csa_check(&dev->mt76);
 

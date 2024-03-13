@@ -50,6 +50,10 @@ enum rdma_restrack_type {
 	 */
 	RDMA_RESTRACK_COUNTER,
 	/**
+	 * @RDMA_RESTRACK_SRQ: Shared receive queue (SRQ)
+	 */
+	RDMA_RESTRACK_SRQ,
+	/**
 	 * @RDMA_RESTRACK_MAX: Last entry, used for array dclarations
 	 */
 	RDMA_RESTRACK_MAX
@@ -158,8 +162,8 @@ struct rdma_restrack_entry *rdma_restrack_get_byid(struct ib_device *dev,
  * rdma_restrack_no_track() - don't add resource to the DB
  * @res: resource entry
  *
- * Every user of thie API should be cross examined.
- * Probaby you don't need to use this function.
+ * Every user of this API should be cross examined.
+ * Probably you don't need to use this function.
  */
 static inline void rdma_restrack_no_track(struct rdma_restrack_entry *res)
 {

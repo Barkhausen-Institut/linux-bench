@@ -11,10 +11,11 @@
 #include <linux/media-bus-format.h>
 
 #include <drm/drm_device.h>
-#include <drm/drm_fb_cma_helper.h>
+#include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_gem_cma_helper.h>
-#include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_gem_atomic_helper.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_bridge.h>
@@ -164,7 +165,7 @@ static int mcde_display_check(struct drm_simple_display_pipe *pipe,
 	struct drm_framebuffer *fb = pstate->fb;
 
 	if (fb) {
-		u32 offset = drm_fb_cma_get_gem_addr(fb, pstate, 0);
+		u32 offset = drm_fb_dma_get_gem_addr(fb, pstate, 0);
 
 		/* FB base address must be dword aligned. */
 		if (offset & 3) {
@@ -1161,7 +1162,6 @@ static void mcde_display_enable(struct drm_simple_display_pipe *pipe,
 	int dsi_pkt_size;
 	int fifo_wtrmrk;
 	int cpp = fb->format->cpp[0];
-	struct drm_format_name_buf tmp;
 	u32 dsi_formatter_frame;
 	u32 val;
 	int ret;
@@ -1173,9 +1173,8 @@ static void mcde_display_enable(struct drm_simple_display_pipe *pipe,
 		return;
 	}
 
-	dev_info(drm->dev, "enable MCDE, %d x %d format %s\n",
-		 mode->hdisplay, mode->vdisplay,
-		 drm_get_format_name(format, &tmp));
+	dev_info(drm->dev, "enable MCDE, %d x %d format %p4cc\n",
+		 mode->hdisplay, mode->vdisplay, &format);
 
 
 	/* Clear any pending interrupts */
@@ -1425,7 +1424,7 @@ static void mcde_display_update(struct drm_simple_display_pipe *pipe,
 	 * from the DRM core before the display is enabled.
 	 */
 	if (fb) {
-		mcde_set_extsrc(mcde, drm_fb_cma_get_gem_addr(fb, pstate, 0));
+		mcde_set_extsrc(mcde, drm_fb_dma_get_gem_addr(fb, pstate, 0));
 		dev_info_once(mcde->dev, "first update of display contents\n");
 		/*
 		 * Usually the flow is already active, unless we are in
@@ -1481,7 +1480,6 @@ static struct drm_simple_display_pipe_funcs mcde_display_funcs = {
 	.update = mcde_display_update,
 	.enable_vblank = mcde_display_enable_vblank,
 	.disable_vblank = mcde_display_disable_vblank,
-	.prepare_fb = drm_gem_fb_simple_display_pipe_prepare_fb,
 };
 
 int mcde_display_init(struct drm_device *drm)

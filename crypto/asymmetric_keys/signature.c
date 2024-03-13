@@ -35,7 +35,7 @@ void public_key_signature_free(struct public_key_signature *sig)
 EXPORT_SYMBOL_GPL(public_key_signature_free);
 
 /**
- * query_asymmetric_key - Get information about an aymmetric key.
+ * query_asymmetric_key - Get information about an asymmetric key.
  * @params: Various parameters.
  * @info: Where to put the information.
  */
@@ -115,7 +115,7 @@ EXPORT_SYMBOL_GPL(decrypt_blob);
  * Sign the specified data blob using the private key specified by params->key.
  * The signature is wrapped in an encoding if params->encoding is specified
  * (eg. "pkcs1").  If the encoding needs to know the digest type, this can be
- * passed through params->hash_algo (eg. "sha1").
+ * passed through params->hash_algo (eg. "sha512").
  *
  * Returns the length of the data placed in the signature buffer or an error.
  */

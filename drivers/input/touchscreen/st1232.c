@@ -92,10 +92,15 @@ static int st1232_ts_wait_ready(struct st1232_ts_data *ts)
 	unsigned int retries;
 	int error;
 
-	for (retries = 10; retries; retries--) {
+	for (retries = 100; retries; retries--) {
 		error = st1232_ts_read_data(ts, REG_STATUS, 1);
-		if (!error && ts->read_buf[0] == (STATUS_NORMAL | ERROR_NONE))
-			return 0;
+		if (!error) {
+			switch (ts->read_buf[0]) {
+			case STATUS_NORMAL | ERROR_NONE:
+			case STATUS_IDLE | ERROR_NONE:
+				return 0;
+			}
+		}
 
 		usleep_range(1000, 2000);
 	}
@@ -215,9 +220,9 @@ static const struct st_chip_info st1633_chip_info = {
 	.max_fingers	= 5,
 };
 
-static int st1232_ts_probe(struct i2c_client *client,
-			   const struct i2c_device_id *id)
+static int st1232_ts_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	const struct st_chip_info *match;
 	struct st1232_ts_data *ts;
 	struct input_dev *input_dev;
@@ -335,7 +340,7 @@ static int st1232_ts_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int __maybe_unused st1232_ts_suspend(struct device *dev)
+static int st1232_ts_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct st1232_ts_data *ts = i2c_get_clientdata(client);
@@ -348,7 +353,7 @@ static int __maybe_unused st1232_ts_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused st1232_ts_resume(struct device *dev)
+static int st1232_ts_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	struct st1232_ts_data *ts = i2c_get_clientdata(client);
@@ -361,8 +366,8 @@ static int __maybe_unused st1232_ts_resume(struct device *dev)
 	return 0;
 }
 
-static SIMPLE_DEV_PM_OPS(st1232_ts_pm_ops,
-			 st1232_ts_suspend, st1232_ts_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(st1232_ts_pm_ops,
+				st1232_ts_suspend, st1232_ts_resume);
 
 static const struct i2c_device_id st1232_ts_id[] = {
 	{ ST1232_TS_NAME, (unsigned long)&st1232_chip_info },
@@ -384,7 +389,8 @@ static struct i2c_driver st1232_ts_driver = {
 	.driver = {
 		.name	= ST1232_TS_NAME,
 		.of_match_table = st1232_ts_dt_ids,
-		.pm	= &st1232_ts_pm_ops,
+		.probe_type	= PROBE_PREFER_ASYNCHRONOUS,
+		.pm	= pm_sleep_ptr(&st1232_ts_pm_ops),
 	},
 };
 

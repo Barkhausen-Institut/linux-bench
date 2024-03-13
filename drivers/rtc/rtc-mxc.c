@@ -11,7 +11,6 @@
 #include <linux/pm_wakeirq.h>
 #include <linux/clk.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 
 #define RTC_INPUT_CLK_32768HZ	(0x00 << 5)
 #define RTC_INPUT_CLK_32000HZ	(0x01 << 5)
@@ -189,11 +188,10 @@ static irqreturn_t mxc_rtc_interrupt(int irq, void *dev_id)
 	struct platform_device *pdev = dev_id;
 	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 	void __iomem *ioaddr = pdata->ioaddr;
-	unsigned long flags;
 	u32 status;
 	u32 events = 0;
 
-	spin_lock_irqsave(&pdata->rtc->irq_lock, flags);
+	spin_lock(&pdata->rtc->irq_lock);
 	status = readw(ioaddr + RTC_RTCISR) & readw(ioaddr + RTC_RTCIENR);
 	/* clear interrupt sources */
 	writew(status, ioaddr + RTC_RTCISR);
@@ -209,7 +207,7 @@ static irqreturn_t mxc_rtc_interrupt(int irq, void *dev_id)
 		events |= (RTC_PF | RTC_IRQF);
 
 	rtc_update_irq(pdata->rtc, 1, events);
-	spin_unlock_irqrestore(&pdata->rtc->irq_lock, flags);
+	spin_unlock(&pdata->rtc->irq_lock);
 
 	return IRQ_HANDLED;
 }
@@ -292,14 +290,6 @@ static const struct rtc_class_ops mxc_rtc_ops = {
 	.alarm_irq_enable	= mxc_rtc_alarm_irq_enable,
 };
 
-static void mxc_rtc_action(void *p)
-{
-	struct rtc_plat_data *pdata = p;
-
-	clk_disable_unprepare(pdata->clk_ref);
-	clk_disable_unprepare(pdata->clk_ipg);
-}
-
 static int mxc_rtc_probe(struct platform_device *pdev)
 {
 	struct rtc_device *rtc;
@@ -312,7 +302,7 @@ static int mxc_rtc_probe(struct platform_device *pdev)
 	if (!pdata)
 		return -ENOMEM;
 
-	pdata->devtype = (enum imx_rtc_type)of_device_get_match_data(&pdev->dev);
+	pdata->devtype = (uintptr_t)of_device_get_match_data(&pdev->dev);
 
 	pdata->ioaddr = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(pdata->ioaddr))
@@ -342,32 +332,17 @@ static int mxc_rtc_probe(struct platform_device *pdev)
 		rtc->range_max = (1 << 16) * 86400ULL - 1;
 	}
 
-	pdata->clk_ipg = devm_clk_get(&pdev->dev, "ipg");
+	pdata->clk_ipg = devm_clk_get_enabled(&pdev->dev, "ipg");
 	if (IS_ERR(pdata->clk_ipg)) {
 		dev_err(&pdev->dev, "unable to get ipg clock!\n");
 		return PTR_ERR(pdata->clk_ipg);
 	}
 
-	ret = clk_prepare_enable(pdata->clk_ipg);
-	if (ret)
-		return ret;
-
-	pdata->clk_ref = devm_clk_get(&pdev->dev, "ref");
+	pdata->clk_ref = devm_clk_get_enabled(&pdev->dev, "ref");
 	if (IS_ERR(pdata->clk_ref)) {
-		clk_disable_unprepare(pdata->clk_ipg);
 		dev_err(&pdev->dev, "unable to get ref clock!\n");
 		return PTR_ERR(pdata->clk_ref);
 	}
-
-	ret = clk_prepare_enable(pdata->clk_ref);
-	if (ret) {
-		clk_disable_unprepare(pdata->clk_ipg);
-		return ret;
-	}
-
-	ret = devm_add_action_or_reset(&pdev->dev, mxc_rtc_action, pdata);
-	if (ret)
-		return ret;
 
 	rate = clk_get_rate(pdata->clk_ref);
 
@@ -416,7 +391,7 @@ static int mxc_rtc_probe(struct platform_device *pdev)
 static struct platform_driver mxc_rtc_driver = {
 	.driver = {
 		   .name	= "mxc_rtc",
-		   .of_match_table = of_match_ptr(imx_rtc_dt_ids),
+		   .of_match_table = imx_rtc_dt_ids,
 	},
 	.probe = mxc_rtc_probe,
 };

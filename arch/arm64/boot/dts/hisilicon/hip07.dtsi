@@ -2,7 +2,7 @@
 /**
  * dts file for Hisilicon D05 Development Board
  *
- * Copyright (C) 2016 Hisilicon Ltd.
+ * Copyright (C) 2016 HiSilicon Ltd.
  */
 
 #include <dt-bindings/interrupt-controller/arm-gic.h>
@@ -842,66 +842,98 @@
 
 		cluster0_l2: l2-cache0 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster1_l2: l2-cache1 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster2_l2: l2-cache2 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster3_l2: l2-cache3 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster4_l2: l2-cache4 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster5_l2: l2-cache5 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster6_l2: l2-cache6 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster7_l2: l2-cache7 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster8_l2: l2-cache8 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster9_l2: l2-cache9 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster10_l2: l2-cache10 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster11_l2: l2-cache11 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster12_l2: l2-cache12 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster13_l2: l2-cache13 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster14_l2: l2-cache14 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 
 		cluster15_l2: l2-cache15 {
 			compatible = "cache";
+			cache-level = <2>;
+			cache-unified;
 		};
 	};
 
@@ -1166,7 +1198,6 @@
 		reg = <0x0 0xa0040000 0x0 0x20000>;
 		#iommu-cells = <1>;
 		dma-coherent;
-		smmu-cb-memtype = <0x0 0x1>;
 		hisilicon,broken-prefetch-cmd;
 		status = "disabled";
 	};
@@ -1181,7 +1212,6 @@
 		#iommu-cells = <1>;
 		dma-coherent;
 		hisilicon,broken-prefetch-cmd;
-		/* smmu-cb-memtype = <0x0 0x1>;*/
 	};
 	p0_smmu_alg_b: iommu@8d0040000 {
 		compatible = "arm,smmu-v3";
@@ -1194,7 +1224,6 @@
 		#iommu-cells = <1>;
 		dma-coherent;
 		hisilicon,broken-prefetch-cmd;
-		/* smmu-cb-memtype = <0x0 0x1>;*/
 	};
 	p1_smmu_alg_a: iommu@400d0040000 {
 		compatible = "arm,smmu-v3";
@@ -1207,7 +1236,6 @@
 		#iommu-cells = <1>;
 		dma-coherent;
 		hisilicon,broken-prefetch-cmd;
-		/* smmu-cb-memtype = <0x0 0x1>;*/
 	};
 	p1_smmu_alg_b: iommu@408d0040000 {
 		compatible = "arm,smmu-v3";
@@ -1220,7 +1248,6 @@
 		#iommu-cells = <1>;
 		dma-coherent;
 		hisilicon,broken-prefetch-cmd;
-		/* smmu-cb-memtype = <0x0 0x1>;*/
 	};
 
 	soc {
@@ -1243,7 +1270,7 @@
 			};
 		};
 
-		uart0: uart@602b0000 {
+		uart0: serial@602b0000 {
 			compatible = "arm,sbsa-uart";
 			reg = <0x0 0x602b0000 0x0 0x1000>;
 			interrupt-parent = <&mbigen_uart>;
@@ -1427,7 +1454,7 @@
 
 			port@1 {
 				reg = <1>;
-				serdes-syscon= <&serdes_ctrl>;
+				serdes-syscon = <&serdes_ctrl>;
 				cpld-syscon = <&dsa_cpld 0x4>;
 				port-rst-offset = <1>;
 				port-mode-offset = <1>;
@@ -1438,7 +1465,7 @@
 			port@4 {
 				reg = <4>;
 				phy-handle = <&phy0>;
-				serdes-syscon= <&serdes_ctrl>;
+				serdes-syscon = <&serdes_ctrl>;
 				port-rst-offset = <4>;
 				port-mode-offset = <2>;
 				mc-mac-mask = [ff f0 00 00 00 00];
@@ -1448,7 +1475,7 @@
 			port@5 {
 				reg = <5>;
 				phy-handle = <&phy1>;
-				serdes-syscon= <&serdes_ctrl>;
+				serdes-syscon = <&serdes_ctrl>;
 				port-rst-offset = <5>;
 				port-mode-offset = <3>;
 				mc-mac-mask = [ff f0 00 00 00 00];
@@ -1456,7 +1483,7 @@
 			};
 		};
 
-		eth0: ethernet@4{
+		eth0: ethernet@4 {
 			compatible = "hisilicon,hns-nic-v2";
 			ae-handle = <&dsaf0>;
 			port-idx-in-ae = <4>;
@@ -1465,7 +1492,7 @@
 			dma-coherent;
 		};
 
-		eth1: ethernet@5{
+		eth1: ethernet@5 {
 			compatible = "hisilicon,hns-nic-v2";
 			ae-handle = <&dsaf0>;
 			port-idx-in-ae = <5>;
@@ -1474,7 +1501,7 @@
 			dma-coherent;
 		};
 
-		eth2: ethernet@0{
+		eth2: ethernet@0 {
 			compatible = "hisilicon,hns-nic-v2";
 			ae-handle = <&dsaf0>;
 			port-idx-in-ae = <0>;
@@ -1483,7 +1510,7 @@
 			dma-coherent;
 		};
 
-		eth3: ethernet@1{
+		eth3: ethernet@1 {
 			compatible = "hisilicon,hns-nic-v2";
 			ae-handle = <&dsaf0>;
 			port-idx-in-ae = <1>;
@@ -1708,8 +1735,8 @@
 			#size-cells = <2>;
 			device_type = "pci";
 			dma-coherent;
-			ranges = <0x02000000 0 0xa8000000 0 0xa8000000 0 0x77f0000
-				  0x01000000 0 0 0 0xaf7f0000 0 0x10000>;
+			ranges = <0x02000000 0 0xa8000000 0 0xa8000000 0 0x77f0000>,
+				 <0x01000000 0 0 0 0xaf7f0000 0 0x10000>;
 			#interrupt-cells = <1>;
 			interrupt-map-mask = <0xf800 0 0 7>;
 			interrupt-map = <0x0 0 0 1 &mbigen_pcie2_a 671 4

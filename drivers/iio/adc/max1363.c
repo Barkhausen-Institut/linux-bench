@@ -29,7 +29,6 @@
 #include <linux/iio/sysfs.h>
 #include <linux/iio/events.h>
 #include <linux/iio/buffer.h>
-#include <linux/iio/driver.h>
 #include <linux/iio/kfifo_buf.h>
 #include <linux/iio/trigger_consumer.h>
 #include <linux/iio/triggered_buffer.h>
@@ -149,7 +148,6 @@ struct max1363_chip_info {
  * @chip_info:		chip model specific constants, available modes, etc.
  * @current_mode:	the scan mode of this chip
  * @requestedmask:	a valid requested set of channels
- * @reg:		supply regulator
  * @lock:		lock to ensure state is consistent
  * @monitor_on:		whether monitor mode is enabled
  * @monitor_speed:	parameter corresponding to device monitor speed setting
@@ -169,7 +167,6 @@ struct max1363_state {
 	const struct max1363_chip_info	*chip_info;
 	const struct max1363_mode	*current_mode;
 	u32				requestedmask;
-	struct regulator		*reg;
 	struct mutex			lock;
 
 	/* Using monitor modes and buffer at the same time is
@@ -1577,9 +1574,14 @@ static const struct of_device_id max1363_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, max1363_of_match);
 
-static int max1363_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static void max1363_reg_disable(void *reg)
 {
+	regulator_disable(reg);
+}
+
+static int max1363_probe(struct i2c_client *client)
+{
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	int ret;
 	struct max1363_state *st;
 	struct iio_dev *indio_dev;
@@ -1590,29 +1592,14 @@ static int max1363_probe(struct i2c_client *client,
 	if (!indio_dev)
 		return -ENOMEM;
 
-	ret = iio_map_array_register(indio_dev, client->dev.platform_data);
-	if (ret < 0)
-		return ret;
-
 	st = iio_priv(indio_dev);
 
 	mutex_init(&st->lock);
-	st->reg = devm_regulator_get(&client->dev, "vcc");
-	if (IS_ERR(st->reg)) {
-		ret = PTR_ERR(st->reg);
-		goto error_unregister_map;
-	}
-
-	ret = regulator_enable(st->reg);
+	ret = devm_regulator_get_enable(&client->dev, "vcc");
 	if (ret)
-		goto error_unregister_map;
+		return ret;
 
-	/* this is only used for device removal purposes */
-	i2c_set_clientdata(client, indio_dev);
-
-	st->chip_info = device_get_match_data(&client->dev);
-	if (!st->chip_info)
-		st->chip_info = &max1363_chip_info_tbl[id->driver_data];
+	st->chip_info = i2c_get_match_data(client);
 	st->client = client;
 
 	st->vref_uv = st->chip_info->int_vref_mv * 1000;
@@ -1622,13 +1609,17 @@ static int max1363_probe(struct i2c_client *client,
 
 		ret = regulator_enable(vref);
 		if (ret)
-			goto error_disable_reg;
+			return ret;
+
+		ret = devm_add_action_or_reset(&client->dev, max1363_reg_disable, vref);
+		if (ret)
+			return ret;
+
 		st->vref = vref;
 		vref_uv = regulator_get_voltage(vref);
-		if (vref_uv <= 0) {
-			ret = -EINVAL;
-			goto error_disable_reg;
-		}
+		if (vref_uv <= 0)
+			return -EINVAL;
+
 		st->vref_uv = vref_uv;
 	}
 
@@ -1640,13 +1631,12 @@ static int max1363_probe(struct i2c_client *client,
 		st->send = max1363_smbus_send;
 		st->recv = max1363_smbus_recv;
 	} else {
-		ret = -EOPNOTSUPP;
-		goto error_disable_reg;
+		return -EOPNOTSUPP;
 	}
 
 	ret = max1363_alloc_scan_masks(indio_dev);
 	if (ret)
-		goto error_disable_reg;
+		return ret;
 
 	indio_dev->name = id->name;
 	indio_dev->channels = st->chip_info->channels;
@@ -1655,12 +1645,12 @@ static int max1363_probe(struct i2c_client *client,
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	ret = max1363_initial_setup(st);
 	if (ret < 0)
-		goto error_disable_reg;
+		return ret;
 
-	ret = iio_triggered_buffer_setup(indio_dev, NULL,
-		&max1363_trigger_handler, NULL);
+	ret = devm_iio_triggered_buffer_setup(&client->dev, indio_dev, NULL,
+					      &max1363_trigger_handler, NULL);
 	if (ret)
-		goto error_disable_reg;
+		return ret;
 
 	if (client->irq) {
 		ret = devm_request_threaded_irq(&client->dev, st->client->irq,
@@ -1671,81 +1661,57 @@ static int max1363_probe(struct i2c_client *client,
 					   indio_dev);
 
 		if (ret)
-			goto error_uninit_buffer;
+			return ret;
 	}
 
-	ret = iio_device_register(indio_dev);
-	if (ret < 0)
-		goto error_uninit_buffer;
-
-	return 0;
-
-error_uninit_buffer:
-	iio_triggered_buffer_cleanup(indio_dev);
-error_disable_reg:
-	if (st->vref)
-		regulator_disable(st->vref);
-	regulator_disable(st->reg);
-error_unregister_map:
-	iio_map_array_unregister(indio_dev);
-	return ret;
+	return devm_iio_device_register(&client->dev, indio_dev);
 }
 
-static int max1363_remove(struct i2c_client *client)
-{
-	struct iio_dev *indio_dev = i2c_get_clientdata(client);
-	struct max1363_state *st = iio_priv(indio_dev);
-
-	iio_device_unregister(indio_dev);
-	iio_triggered_buffer_cleanup(indio_dev);
-	if (st->vref)
-		regulator_disable(st->vref);
-	regulator_disable(st->reg);
-	iio_map_array_unregister(indio_dev);
-
-	return 0;
+#define MAX1363_ID_TABLE(_name, cfg) {				\
+	.name = _name,						\
+	.driver_data = (kernel_ulong_t)&max1363_chip_info_tbl[cfg],	\
 }
 
 static const struct i2c_device_id max1363_id[] = {
-	{ "max1361", max1361 },
-	{ "max1362", max1362 },
-	{ "max1363", max1363 },
-	{ "max1364", max1364 },
-	{ "max1036", max1036 },
-	{ "max1037", max1037 },
-	{ "max1038", max1038 },
-	{ "max1039", max1039 },
-	{ "max1136", max1136 },
-	{ "max1137", max1137 },
-	{ "max1138", max1138 },
-	{ "max1139", max1139 },
-	{ "max1236", max1236 },
-	{ "max1237", max1237 },
-	{ "max1238", max1238 },
-	{ "max1239", max1239 },
-	{ "max11600", max11600 },
-	{ "max11601", max11601 },
-	{ "max11602", max11602 },
-	{ "max11603", max11603 },
-	{ "max11604", max11604 },
-	{ "max11605", max11605 },
-	{ "max11606", max11606 },
-	{ "max11607", max11607 },
-	{ "max11608", max11608 },
-	{ "max11609", max11609 },
-	{ "max11610", max11610 },
-	{ "max11611", max11611 },
-	{ "max11612", max11612 },
-	{ "max11613", max11613 },
-	{ "max11614", max11614 },
-	{ "max11615", max11615 },
-	{ "max11616", max11616 },
-	{ "max11617", max11617 },
-	{ "max11644", max11644 },
-	{ "max11645", max11645 },
-	{ "max11646", max11646 },
-	{ "max11647", max11647 },
-	{}
+	MAX1363_ID_TABLE("max1361", max1361),
+	MAX1363_ID_TABLE("max1362", max1362),
+	MAX1363_ID_TABLE("max1363", max1363),
+	MAX1363_ID_TABLE("max1364", max1364),
+	MAX1363_ID_TABLE("max1036", max1036),
+	MAX1363_ID_TABLE("max1037", max1037),
+	MAX1363_ID_TABLE("max1038", max1038),
+	MAX1363_ID_TABLE("max1039", max1039),
+	MAX1363_ID_TABLE("max1136", max1136),
+	MAX1363_ID_TABLE("max1137", max1137),
+	MAX1363_ID_TABLE("max1138", max1138),
+	MAX1363_ID_TABLE("max1139", max1139),
+	MAX1363_ID_TABLE("max1236", max1236),
+	MAX1363_ID_TABLE("max1237", max1237),
+	MAX1363_ID_TABLE("max1238", max1238),
+	MAX1363_ID_TABLE("max1239", max1239),
+	MAX1363_ID_TABLE("max11600", max11600),
+	MAX1363_ID_TABLE("max11601", max11601),
+	MAX1363_ID_TABLE("max11602", max11602),
+	MAX1363_ID_TABLE("max11603", max11603),
+	MAX1363_ID_TABLE("max11604", max11604),
+	MAX1363_ID_TABLE("max11605", max11605),
+	MAX1363_ID_TABLE("max11606", max11606),
+	MAX1363_ID_TABLE("max11607", max11607),
+	MAX1363_ID_TABLE("max11608", max11608),
+	MAX1363_ID_TABLE("max11609", max11609),
+	MAX1363_ID_TABLE("max11610", max11610),
+	MAX1363_ID_TABLE("max11611", max11611),
+	MAX1363_ID_TABLE("max11612", max11612),
+	MAX1363_ID_TABLE("max11613", max11613),
+	MAX1363_ID_TABLE("max11614", max11614),
+	MAX1363_ID_TABLE("max11615", max11615),
+	MAX1363_ID_TABLE("max11616", max11616),
+	MAX1363_ID_TABLE("max11617", max11617),
+	MAX1363_ID_TABLE("max11644", max11644),
+	MAX1363_ID_TABLE("max11645", max11645),
+	MAX1363_ID_TABLE("max11646", max11646),
+	MAX1363_ID_TABLE("max11647", max11647),
+	{ /* sentinel */ }
 };
 
 MODULE_DEVICE_TABLE(i2c, max1363_id);
@@ -1756,7 +1722,6 @@ static struct i2c_driver max1363_driver = {
 		.of_match_table = max1363_of_match,
 	},
 	.probe = max1363_probe,
-	.remove = max1363_remove,
 	.id_table = max1363_id,
 };
 module_i2c_driver(max1363_driver);

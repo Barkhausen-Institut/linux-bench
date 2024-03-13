@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/jiffies.h>
+#include <linux/nospec.h>
 #include <linux/skbuff.h>
 #include <linux/string.h>
 #include <linux/types.h>
@@ -124,13 +125,16 @@ void nla_get_range_unsigned(const struct nla_policy *pt,
 		range->max = U8_MAX;
 		break;
 	case NLA_U16:
+	case NLA_BE16:
 	case NLA_BINARY:
 		range->max = U16_MAX;
 		break;
 	case NLA_U32:
+	case NLA_BE32:
 		range->max = U32_MAX;
 		break;
 	case NLA_U64:
+	case NLA_UINT:
 	case NLA_MSECS:
 		range->max = U64_MAX;
 		break;
@@ -178,11 +182,22 @@ static int nla_validate_range_unsigned(const struct nla_policy *pt,
 		value = nla_get_u32(nla);
 		break;
 	case NLA_U64:
+		value = nla_get_u64(nla);
+		break;
+	case NLA_UINT:
+		value = nla_get_uint(nla);
+		break;
 	case NLA_MSECS:
 		value = nla_get_u64(nla);
 		break;
 	case NLA_BINARY:
 		value = nla_len(nla);
+		break;
+	case NLA_BE16:
+		value = ntohs(nla_get_be16(nla));
+		break;
+	case NLA_BE32:
+		value = ntohl(nla_get_be32(nla));
 		break;
 	default:
 		return -EINVAL;
@@ -237,6 +252,7 @@ void nla_get_range_signed(const struct nla_policy *pt,
 		range->max = S32_MAX;
 		break;
 	case NLA_S64:
+	case NLA_SINT:
 		range->min = S64_MIN;
 		range->max = S64_MAX;
 		break;
@@ -284,6 +300,9 @@ static int nla_validate_int_range_signed(const struct nla_policy *pt,
 	case NLA_S64:
 		value = nla_get_s64(nla);
 		break;
+	case NLA_SINT:
+		value = nla_get_sint(nla);
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -309,13 +328,17 @@ static int nla_validate_int_range(const struct nla_policy *pt,
 	case NLA_U16:
 	case NLA_U32:
 	case NLA_U64:
+	case NLA_UINT:
 	case NLA_MSECS:
 	case NLA_BINARY:
+	case NLA_BE16:
+	case NLA_BE32:
 		return nla_validate_range_unsigned(pt, nla, extack, validate);
 	case NLA_S8:
 	case NLA_S16:
 	case NLA_S32:
 	case NLA_S64:
+	case NLA_SINT:
 		return nla_validate_int_range_signed(pt, nla, extack);
 	default:
 		WARN_ON(1);
@@ -341,6 +364,15 @@ static int nla_validate_mask(const struct nla_policy *pt,
 		break;
 	case NLA_U64:
 		value = nla_get_u64(nla);
+		break;
+	case NLA_UINT:
+		value = nla_get_uint(nla);
+		break;
+	case NLA_BE16:
+		value = ntohs(nla_get_be16(nla));
+		break;
+	case NLA_BE32:
+		value = ntohl(nla_get_be32(nla));
 		break;
 	default:
 		return -EINVAL;
@@ -369,6 +401,7 @@ static int validate_nla(const struct nlattr *nla, int maxtype,
 	if (type <= 0 || type > maxtype)
 		return 0;
 
+	type = array_index_nospec(type, maxtype + 1);
 	pt = &policy[type];
 
 	BUG_ON(pt->type > NLA_TYPE_MAX);
@@ -411,6 +444,15 @@ static int validate_nla(const struct nlattr *nla, int maxtype,
 	case NLA_FLAG:
 		if (attrlen > 0)
 			goto out_err;
+		break;
+
+	case NLA_SINT:
+	case NLA_UINT:
+		if (attrlen != sizeof(u32) && attrlen != sizeof(u64)) {
+			NL_SET_ERR_MSG_ATTR_POL(extack, nla, pt,
+						"invalid attribute length");
+			return -EINVAL;
+		}
 		break;
 
 	case NLA_BITFIELD32:
@@ -584,6 +626,7 @@ static int __nla_validate_parse(const struct nlattr *head, int len, int maxtype,
 			}
 			continue;
 		}
+		type = array_index_nospec(type, maxtype + 1);
 		if (policy) {
 			int err = validate_nla(nla, maxtype, policy,
 					       validate, extack, depth);
@@ -619,7 +662,7 @@ static int __nla_validate_parse(const struct nlattr *head, int len, int maxtype,
  * Validates all attributes in the specified attribute stream against the
  * specified policy. Validation depends on the validate flags passed, see
  * &enum netlink_validation for more details on that.
- * See documenation of struct nla_policy for more details.
+ * See documentation of struct nla_policy for more details.
  *
  * Returns 0 on success or a negative error code.
  */
@@ -633,8 +676,8 @@ int __nla_validate(const struct nlattr *head, int len, int maxtype,
 EXPORT_SYMBOL(__nla_validate);
 
 /**
- * nla_policy_len - Determin the max. length of a policy
- * @policy: policy to use
+ * nla_policy_len - Determine the max. length of a policy
+ * @p: policy to use
  * @n: number of policies
  *
  * Determines the max. length of the policy.  It is currently used
@@ -828,7 +871,7 @@ int nla_strcmp(const struct nlattr *nla, const char *str)
 	int attrlen = nla_len(nla);
 	int d;
 
-	if (attrlen > 0 && buf[attrlen - 1] == '\0')
+	while (attrlen > 0 && buf[attrlen - 1] == '\0')
 		attrlen--;
 
 	d = attrlen - len;

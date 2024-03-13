@@ -12,7 +12,7 @@
 #include <linux/uaccess.h>
 #include <linux/mm_types.h>
 #include <asm/tlbflush.h>
-#include <asm/ctl_reg.h>
+#include <asm/ctlreg.h>
 #include <asm-generic/mm_hooks.h>
 
 #define init_new_context init_new_context
@@ -22,11 +22,10 @@ static inline int init_new_context(struct task_struct *tsk,
 	unsigned long asce_type, init_entry;
 
 	spin_lock_init(&mm->context.lock);
-	INIT_LIST_HEAD(&mm->context.pgtable_list);
 	INIT_LIST_HEAD(&mm->context.gmap_list);
 	cpumask_clear(&mm->context.cpu_attach_mask);
 	atomic_set(&mm->context.flush_count, 0);
-	atomic_set(&mm->context.is_protected, 0);
+	atomic_set(&mm->context.protected_count, 0);
 	mm->context.gmap_asce = 0;
 	mm->context.flush_mm = 0;
 #ifdef CONFIG_PGSTE
@@ -70,20 +69,31 @@ static inline int init_new_context(struct task_struct *tsk,
 	return 0;
 }
 
-static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
-			     struct task_struct *tsk)
+static inline void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
+				      struct task_struct *tsk)
 {
 	int cpu = smp_processor_id();
 
 	if (next == &init_mm)
 		S390_lowcore.user_asce = s390_invalid_asce;
 	else
-		S390_lowcore.user_asce = next->context.asce;
+		S390_lowcore.user_asce.val = next->context.asce;
 	cpumask_set_cpu(cpu, &next->context.cpu_attach_mask);
 	/* Clear previous user-ASCE from CR7 */
-	__ctl_load(s390_invalid_asce, 7, 7);
+	local_ctl_load(7, &s390_invalid_asce);
 	if (prev != next)
 		cpumask_clear_cpu(cpu, &prev->context.cpu_attach_mask);
+}
+#define switch_mm_irqs_off switch_mm_irqs_off
+
+static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
+			     struct task_struct *tsk)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+	switch_mm_irqs_off(prev, next, tsk);
+	local_irq_restore(flags);
 }
 
 #define finish_arch_post_lock_switch finish_arch_post_lock_switch
@@ -100,7 +110,7 @@ static inline void finish_arch_post_lock_switch(void)
 		__tlb_flush_mm_lazy(mm);
 		preempt_enable();
 	}
-	__ctl_load(S390_lowcore.user_asce, 7, 7);
+	local_ctl_load(7, &S390_lowcore.user_asce);
 }
 
 #define activate_mm activate_mm
@@ -109,7 +119,7 @@ static inline void activate_mm(struct mm_struct *prev,
 {
 	switch_mm(prev, next, current);
 	cpumask_set_cpu(smp_processor_id(), mm_cpumask(next));
-	__ctl_load(S390_lowcore.user_asce, 7, 7);
+	local_ctl_load(7, &S390_lowcore.user_asce);
 }
 
 #include <asm-generic/mmu_context.h>

@@ -107,6 +107,7 @@
  *              Add support for 945GME. (Phil Endecott <spam_from_intelfb@chezphil.org>)
  */
 
+#include <linux/aperture.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -197,6 +198,7 @@ static const struct fb_ops intel_fb_ops = {
 	.owner =		THIS_MODULE,
 	.fb_open =              intelfb_open,
 	.fb_release =           intelfb_release,
+	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var =         intelfb_check_var,
 	.fb_set_par =           intelfb_set_par,
 	.fb_setcolreg =		intelfb_setcolreg,
@@ -207,7 +209,8 @@ static const struct fb_ops intel_fb_ops = {
 	.fb_imageblit =         intelfb_imageblit,
 	.fb_cursor =            intelfb_cursor,
 	.fb_sync =              intelfb_sync,
-	.fb_ioctl =		intelfb_ioctl
+	.fb_ioctl =		intelfb_ioctl,
+	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 /* PCI driver module table */
@@ -388,6 +391,9 @@ static int __init intelfb_init(void)
 	if (idonly)
 		return -ENODEV;
 
+	if (fb_modesetting_disabled("intelfb"))
+		return -ENODEV;
+
 #ifndef MODULE
 	if (fb_get_options("intelfb", &option))
 		return -ENODEV;
@@ -472,7 +478,7 @@ static int intelfb_pci_register(struct pci_dev *pdev,
 	struct fb_info *info;
 	struct intelfb_info *dinfo;
 	int i, err, dvo;
-	int aperture_size, stolen_size;
+	int aperture_size, stolen_size = 0;
 	struct agp_kern_info gtt_info;
 	int agp_memtype;
 	const char *s;
@@ -482,6 +488,10 @@ static int intelfb_pci_register(struct pci_dev *pdev,
 	int offset;
 
 	DBG_MSG("intelfb_pci_register\n");
+
+	err = aperture_remove_conflicting_pci_devices(pdev, "intelfb");
+	if (err)
+		return err;
 
 	num_registered++;
 	if (num_registered != 1) {
@@ -571,7 +581,7 @@ static int intelfb_pci_register(struct pci_dev *pdev,
 		return -ENODEV;
 	}
 
-	if (intelfbhw_get_memory(pdev, &aperture_size,&stolen_size)) {
+	if (intelfbhw_get_memory(pdev, &aperture_size, &stolen_size)) {
 		cleanup(dinfo);
 		return -ENODEV;
 	}
@@ -1090,7 +1100,6 @@ static int intelfb_set_fbinfo(struct intelfb_info *dinfo)
 
 	DBG_MSG("intelfb_set_fbinfo\n");
 
-	info->flags = FBINFO_FLAG_DEFAULT;
 	info->fbops = &intel_fb_ops;
 	info->pseudo_palette = dinfo->pseudo_palette;
 
@@ -1213,6 +1222,9 @@ static int intelfb_check_var(struct fb_var_screeninfo *var,
 	DBG_MSG("intelfb_check_var: accel_flags is %d\n", var->accel_flags);
 
 	dinfo = GET_DINFO(info);
+
+	if (!var->pixclock)
+		return -EINVAL;
 
 	/* update the pitch */
 	if (intelfbhw_validate_mode(dinfo, var) != 0)
@@ -1361,11 +1373,11 @@ static int intelfb_set_par(struct fb_info *info)
 	intelfb_blank(FB_BLANK_UNBLANK, info);
 
 	if (ACCEL(dinfo, info)) {
-		info->flags = FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN |
+		info->flags = FBINFO_HWACCEL_YPAN |
 		FBINFO_HWACCEL_COPYAREA | FBINFO_HWACCEL_FILLRECT |
 		FBINFO_HWACCEL_IMAGEBLIT;
 	} else
-		info->flags = FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN;
+		info->flags = FBINFO_HWACCEL_YPAN;
 
 	kfree(hw);
 	return 0;

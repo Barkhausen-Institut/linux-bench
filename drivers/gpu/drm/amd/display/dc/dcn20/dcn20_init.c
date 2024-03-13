@@ -23,9 +23,11 @@
  *
  */
 
-#include "dce110/dce110_hw_sequencer.h"
-#include "dcn10/dcn10_hw_sequencer.h"
-#include "dcn20_hwseq.h"
+#include "dce110/dce110_hwseq.h"
+#include "dcn10/dcn10_hwseq.h"
+#include "dcn20/dcn20_hwseq.h"
+
+#include "dcn20_init.h"
 
 static const struct hw_sequencer_funcs dcn20_funcs = {
 	.program_gamut_remap = dcn10_program_gamut_remap,
@@ -42,6 +44,7 @@ static const struct hw_sequencer_funcs dcn20_funcs = {
 	.program_output_csc = dcn20_program_output_csc,
 	.enable_accelerated_mode = dce110_enable_accelerated_mode,
 	.enable_timing_synchronization = dcn10_enable_timing_synchronization,
+	.enable_vblanks_synchronization = dcn10_enable_vblanks_synchronization,
 	.enable_per_frame_crtc_position_reset = dcn10_enable_per_frame_crtc_position_reset,
 	.update_info_frame = dce110_update_info_frame,
 	.send_immediate_sdp_message = dcn10_send_immediate_sdp_message,
@@ -90,10 +93,13 @@ static const struct hw_sequencer_funcs dcn20_funcs = {
 	.set_backlight_level = dce110_set_backlight_level,
 	.set_abm_immediate_disable = dce110_set_abm_immediate_disable,
 	.set_pipe = dce110_set_pipe,
-#ifndef TRIM_FSFT
-	.optimize_timing_for_fsft = dcn20_optimize_timing_for_fsft,
-#endif
+	.enable_lvds_link_output = dce110_enable_lvds_link_output,
+	.enable_tmds_link_output = dce110_enable_tmds_link_output,
+	.enable_dp_link_output = dce110_enable_dp_link_output,
+	.disable_link_output = dce110_disable_link_output,
 	.set_disp_pattern_generator = dcn20_set_disp_pattern_generator,
+	.get_dcc_en_bits = dcn10_get_dcc_en_bits,
+	.update_visual_confirm_color = dcn10_update_visual_confirm_color,
 };
 
 static const struct hwseq_private_funcs dcn20_private_funcs = {
@@ -123,8 +129,6 @@ static const struct hwseq_private_funcs dcn20_private_funcs = {
 	.hubp_pg_control = dcn20_hubp_pg_control,
 	.update_odm = dcn20_update_odm,
 	.dsc_pg_control = dcn20_dsc_pg_control,
-	.get_surface_visual_confirm_color = dcn10_get_surface_visual_confirm_color,
-	.get_hdr_visual_confirm_color = dcn10_get_hdr_visual_confirm_color,
 	.set_hdr_multiplier = dcn10_set_hdr_multiplier,
 	.verify_allow_pstate_change_high = dcn10_verify_allow_pstate_change_high,
 	.wait_for_blank_complete = dcn20_wait_for_blank_complete,
@@ -138,8 +142,4 @@ void dcn20_hw_sequencer_construct(struct dc *dc)
 	dc->hwss = dcn20_funcs;
 	dc->hwseq->funcs = dcn20_private_funcs;
 
-	if (IS_FPGA_MAXIMUS_DC(dc->ctx->dce_environment)) {
-		dc->hwss.init_hw = dcn20_fpga_init_hw;
-		dc->hwseq->funcs.init_pipes = NULL;
-	}
 }

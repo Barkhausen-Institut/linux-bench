@@ -3,14 +3,11 @@
 # Makefile for the linux kernel.
 #
 
-ccflags-y := -I$(srctree)/$(src)/include \
-	-I$(srctree)/arch/arm/plat-omap/include
-
 # Common support
 obj-y := id.o io.o control.o devices.o fb.o pm.o \
 	 common.o dma.o omap-headsmp.o sram.o
 
-hwmod-common				= omap_hwmod.o omap_hwmod_reset.o \
+hwmod-common				= omap_hwmod.o \
 					  omap_hwmod_common_data.o \
 					  omap_hwmod_common_ipblock_data.o \
 					  omap_device.o display.o hdq1w.o \
@@ -20,14 +17,14 @@ secure-common				= omap-smc.o omap-secure.o
 
 obj-$(CONFIG_ARCH_OMAP2) += $(omap-2-3-common) $(hwmod-common)
 obj-$(CONFIG_ARCH_OMAP3) += $(omap-2-3-common) $(hwmod-common) $(secure-common)
-obj-$(CONFIG_ARCH_OMAP4) += $(hwmod-common) $(secure-common)
+obj-$(CONFIG_ARCH_OMAP4) += $(secure-common)
 obj-$(CONFIG_SOC_AM33XX) += $(secure-common)
-obj-$(CONFIG_SOC_OMAP5)  += $(hwmod-common) $(secure-common)
+obj-$(CONFIG_SOC_OMAP5)  += $(secure-common)
 obj-$(CONFIG_SOC_AM43XX) += $(secure-common)
-obj-$(CONFIG_SOC_DRA7XX) += $(hwmod-common) $(secure-common)
+obj-$(CONFIG_SOC_DRA7XX) += $(secure-common)
 
 ifneq ($(CONFIG_SND_SOC_OMAP_MCBSP),)
-obj-y += mcbsp.o
+obj-$(CONFIG_OMAP_HWMOD) += mcbsp.o
 endif
 
 obj-$(CONFIG_TWL4030_CORE) += omap_twl.o
@@ -83,7 +80,6 @@ obj-$(CONFIG_ARCH_OMAP4)		+= $(omap-4-5-pm-common)
 obj-$(CONFIG_SOC_OMAP5)			+= $(omap-4-5-pm-common)
 
 ifeq ($(CONFIG_PM),y)
-obj-$(CONFIG_ARCH_OMAP2)		+= pm24xx.o
 obj-$(CONFIG_ARCH_OMAP2)		+= sleep24xx.o
 obj-$(CONFIG_ARCH_OMAP3)		+= pm34xx.o sleep34xx.o
 omap-4-5-pm-common			+= pm44xx.o
@@ -207,9 +203,6 @@ obj-$(CONFIG_SOC_OMAP2430)		+= omap_hwmod_2430_data.o
 obj-$(CONFIG_ARCH_OMAP3)		+= omap_hwmod_2xxx_3xxx_ipblock_data.o
 obj-$(CONFIG_ARCH_OMAP3)		+= omap_hwmod_3xxx_data.o
 obj-$(CONFIG_SOC_TI81XX)		+= omap_hwmod_81xx_data.o
-obj-$(CONFIG_ARCH_OMAP4)		+= omap_hwmod_44xx_data.o
-obj-$(CONFIG_SOC_OMAP5)			+= omap_hwmod_54xx_data.o
-obj-$(CONFIG_SOC_DRA7XX)		+= omap_hwmod_7xx_data.o
 
 # OMAP2420 MSDI controller integration support ("MMC")
 obj-$(CONFIG_SOC_OMAP2420)		+= msdi.o
