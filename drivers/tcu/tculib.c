@@ -24,8 +24,6 @@ typedef enum {
     PrivReg_PRIV_CMD_ARG = 0x3,
     /// The current activity
     PrivReg_CUR_ACT = 0x4,
-    /// Used to ack IRQ requests
-    PrivReg_CLEAR_IRQ = 0x5,
 } PrivReg;
 
 typedef enum {
@@ -43,8 +41,8 @@ typedef enum {
     PrivCmdOpCode_SET_TIMER = 5,
     /// Abort the current command
     PrivCmdOpCode_ABORT_CMD = 6,
-    /// Flushes and invalidates the cache
-    PrivCmdOpCode_FLUSH_CACHE = 7,
+    /// Used to fetch IRQ requests
+    PrivCmdOpCode_FETCH_IRQ = 7,
 } PrivCmdOpCode;
 
 typedef enum {
@@ -315,8 +313,10 @@ void tcu_ack_irq(struct tcu_device *tcu, int irq) {
         tcu_write_priv_reg(tcu, (0x1030 + (irq - 1)) / sizeof(Reg), 0);
     }
     else {
-        Reg irq = tcu_read_priv_reg(tcu, PrivReg_CLEAR_IRQ);
-        tcu_write_priv_reg(tcu, PrivReg_CLEAR_IRQ, irq);
+        Error e;
+        tcu_write_priv_reg(tcu, PrivReg_PRIV_CMD, PrivCmdOpCode_FETCH_IRQ);
+        e = tcu_get_priv_error(tcu);
+        BUG_ON(e != Error_None);
     }
 }
 
